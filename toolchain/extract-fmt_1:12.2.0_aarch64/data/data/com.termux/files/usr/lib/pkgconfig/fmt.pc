@@ -1,0 +1,11 @@
+prefix=/data/data/com.termux/files/usr
+exec_prefix=/data/data/com.termux/files/usr
+libdir=/data/data/com.termux/files/usr/lib
+includedir=/data/data/com.termux/files/usr/include
+
+Name: fmt
+Description: A modern formatting library
+Version: 12.2.0
+Libs: -L${libdir} -lfmt
+Cflags: -I${includedir}
+
