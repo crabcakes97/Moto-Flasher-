@@ -188,7 +188,7 @@ object ValOemMapper {
         val entries = result["commands"] as Map<String, Map<String, Any?>>
         val outMap = linkedMapOf<String, Any?>(
             "image" to image.toString(),
-            "base" to "0x${base.toString(16)}",
+            "base" to "0x${uHex(base)}",
             "known_gates" to KNOWN_GATES.mapKeys { "0x${it.key.toString(16)}" },
             "global_gates" to result["global_gates"],
             "gates_match_known" to result["gates_match_known"],

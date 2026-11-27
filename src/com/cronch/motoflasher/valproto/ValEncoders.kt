@@ -14,9 +14,9 @@ object ValEncoders {
     /** Encode B/BL with 26-bit immediate. opcode 0x14000000 = B, 0x94000000 = BL. */
     fun branchImm26(source: Long, target: Long, opcode: Long = 0x14000000L): ByteArray {
         val delta = target - source
-        require(delta % 4 == 0L) { "branch not aligned: 0x${source.toString(16)} -> 0x${target.toString(16)}" }
+        require(delta % 4 == 0L) { "branch not aligned: 0x${uHex(source)} -> 0x${uHex(target)}" }
         val imm = delta / 4
-        require(imm >= -(1L shl 25) && imm < (1L shl 25)) { "branch fuera de rango: 0x${source.toString(16)} -> 0x${target.toString(16)}" }
+        require(imm >= -(1L shl 25) && imm < (1L shl 25)) { "branch fuera de rango: 0x${uHex(source)} -> 0x${uHex(target)}" }
         return u32(opcode or (imm and 0x03FFFFFFL))
     }
 
@@ -33,24 +33,24 @@ object ValEncoders {
 
     fun encBl(srcVa: Long, dstVa: Long): ByteArray {
         val delta = dstVa - srcVa
-        require(delta % 4 == 0L) { "bl not aligned: 0x${srcVa.toString(16)} -> 0x${dstVa.toString(16)}" }
+        require(delta % 4 == 0L) { "bl not aligned: 0x${uHex(srcVa)} -> 0x${uHex(dstVa)}" }
         val imm = delta / 4
-        require(imm >= -(1L shl 25) && imm < (1L shl 25)) { "bl fuera de rango: 0x${srcVa.toString(16)} -> 0x${dstVa.toString(16)}" }
+        require(imm >= -(1L shl 25) && imm < (1L shl 25)) { "bl fuera de rango: 0x${uHex(srcVa)} -> 0x${uHex(dstVa)}" }
         return u32(0x94000000L or (imm and 0x3FFFFFFL))
     }
 
     fun encB(srcVa: Long, dstVa: Long): ByteArray {
         val delta = dstVa - srcVa
-        require(delta % 4 == 0L) { "b not aligned: 0x${srcVa.toString(16)} -> 0x${dstVa.toString(16)}" }
+        require(delta % 4 == 0L) { "b not aligned: 0x${uHex(srcVa)} -> 0x${uHex(dstVa)}" }
         val imm = delta / 4
-        require(imm >= -(1L shl 25) && imm < (1L shl 25)) { "b fuera de rango: 0x${srcVa.toString(16)} -> 0x${dstVa.toString(16)}" }
+        require(imm >= -(1L shl 25) && imm < (1L shl 25)) { "b fuera de rango: 0x${uHex(srcVa)} -> 0x${uHex(dstVa)}" }
         return u32(0x14000000L or (imm and 0x3FFFFFFL))
     }
 
     /** Encode ADRP+ADD rd, dst. Returns (adrp, add). */
     fun encAdrpAdd(rd: Int, srcVa: Long, dstVa: Long): Pair<ByteArray, ByteArray> {
         val pageDiff = ((dstVa and -0x1000L) - (srcVa and -0x1000L)) / 0x1000L
-        require(pageDiff >= -(1L shl 20) && pageDiff < (1L shl 20)) { "adrp fuera de rango: 0x${srcVa.toString(16)} -> 0x${dstVa.toString(16)}" }
+        require(pageDiff >= -(1L shl 20) && pageDiff < (1L shl 20)) { "adrp fuera de rango: 0x${uHex(srcVa)} -> 0x${uHex(dstVa)}" }
         val imm = pageDiff and 0x1FFFFFL
         val adrp = u32(0x90000000L or ((imm and 3L) shl 29) or (((imm shr 2) and 0x7FFFFL) shl 5) or rd.toLong())
         val lo12 = dstVa and 0xFFFL
@@ -145,25 +145,25 @@ object ValEncoders {
 
     fun branchCond(source: Long, target: Long, cond: Int): ByteArray {
         val delta = target - source
-        require(delta % 4 == 0L) { "conditional branch not aligned: 0x${source.toString(16)} -> 0x${target.toString(16)}" }
+        require(delta % 4 == 0L) { "conditional branch not aligned: 0x${uHex(source)} -> 0x${uHex(target)}" }
         val imm = delta / 4
-        require(imm >= -(1L shl 18) && imm < (1L shl 18)) { "conditional branch fuera de rango: 0x${source.toString(16)} -> 0x${target.toString(16)}" }
+        require(imm >= -(1L shl 18) && imm < (1L shl 18)) { "conditional branch fuera de rango: 0x${uHex(source)} -> 0x${uHex(target)}" }
         return u32(0x54000000L or ((imm and 0x7FFFFL) shl 5) or (cond and 0xF).toLong())
     }
 
     fun cbzX(source: Long, target: Long, rt: Int): ByteArray {
         val delta = target - source
-        require(delta % 4 == 0L) { "cbz not aligned: 0x${source.toString(16)} -> 0x${target.toString(16)}" }
+        require(delta % 4 == 0L) { "cbz not aligned: 0x${uHex(source)} -> 0x${uHex(target)}" }
         val imm = delta / 4
-        require(imm >= -(1L shl 18) && imm < (1L shl 18)) { "cbz fuera de rango: 0x${source.toString(16)} -> 0x${target.toString(16)}" }
+        require(imm >= -(1L shl 18) && imm < (1L shl 18)) { "cbz fuera de rango: 0x${uHex(source)} -> 0x${uHex(target)}" }
         return u32(0xB4000000L or ((imm and 0x7FFFFL) shl 5) or (rt and 0x1F).toLong())
     }
 
     fun cbzW(source: Long, target: Long, rt: Int): ByteArray {
         val delta = target - source
-        require(delta % 4 == 0L) { "cbz not aligned: 0x${source.toString(16)} -> 0x${target.toString(16)}" }
+        require(delta % 4 == 0L) { "cbz not aligned: 0x${uHex(source)} -> 0x${uHex(target)}" }
         val imm = delta / 4
-        require(imm >= -(1L shl 18) && imm < (1L shl 18)) { "cbz fuera de rango: 0x${source.toString(16)} -> 0x${target.toString(16)}" }
+        require(imm >= -(1L shl 18) && imm < (1L shl 18)) { "cbz fuera de rango: 0x${uHex(source)} -> 0x${uHex(target)}" }
         return u32(0x34000000L or ((imm and 0x7FFFFL) shl 5) or (rt and 0x1F).toLong())
     }
 
@@ -259,9 +259,9 @@ object ValEncoders {
     // ---- Thumb (16/32-bit) ----
     fun thumbBW(source: Int, target: Int): ByteArray {
         val delta = target - (source + 4)
-        require(delta % 2 == 0) { "thumb branch not aligned: 0x${source.toString(16)} -> 0x${target.toString(16)}" }
+        require(delta % 2 == 0) { "thumb branch not aligned: 0x${Integer.toUnsignedString(source, 16)} -> 0x${Integer.toUnsignedString(target, 16)}" }
         val imm = delta / 2
-        require(imm >= -(1 shl 24) && imm < (1 shl 24)) { "thumb branch fuera de rango: 0x${source.toString(16)} -> 0x${target.toString(16)}" }
+        require(imm >= -(1 shl 24) && imm < (1 shl 24)) { "thumb branch fuera de rango: 0x${Integer.toUnsignedString(source, 16)} -> 0x${Integer.toUnsignedString(target, 16)}" }
         val u = imm and ((1 shl 24) - 1)
         val s = (u shr 23) and 1
         val i1 = (u shr 22) and 1
@@ -275,9 +275,9 @@ object ValEncoders {
 
     fun thumbBl(source: Int, target: Int): ByteArray {
         val delta = target - (source + 4)
-        require(delta % 2 == 0) { "thumb bl not aligned: 0x${source.toString(16)} -> 0x${target.toString(16)}" }
+        require(delta % 2 == 0) { "thumb bl not aligned: 0x${Integer.toUnsignedString(source, 16)} -> 0x${Integer.toUnsignedString(target, 16)}" }
         val imm = delta / 2
-        require(imm >= -(1 shl 23) && imm < (1 shl 23)) { "thumb bl fuera de rango: 0x${source.toString(16)} -> 0x${target.toString(16)}" }
+        require(imm >= -(1 shl 23) && imm < (1 shl 23)) { "thumb bl fuera de rango: 0x${Integer.toUnsignedString(source, 16)} -> 0x${Integer.toUnsignedString(target, 16)}" }
         val u = imm and ((1 shl 24) - 1)
         val s = (u shr 23) and 1
         val i1 = (u shr 22) and 1
@@ -291,9 +291,9 @@ object ValEncoders {
 
     fun thumbBCond16(source: Int, target: Int, cond: Int): ByteArray {
         val delta = target - (source + 4)
-        require(delta % 2 == 0) { "thumb conditional branch not aligned: 0x${source.toString(16)} -> 0x${target.toString(16)}" }
+        require(delta % 2 == 0) { "thumb conditional branch not aligned: 0x${Integer.toUnsignedString(source, 16)} -> 0x${Integer.toUnsignedString(target, 16)}" }
         val imm = delta / 2
-        require(imm in -128..127) { "thumb conditional branch fuera de rango: 0x${source.toString(16)} -> 0x${target.toString(16)}" }
+        require(imm in -128..127) { "thumb conditional branch fuera de rango: 0x${Integer.toUnsignedString(source, 16)} -> 0x${Integer.toUnsignedString(target, 16)}" }
         return u16(0xD000 or ((cond and 0xF) shl 8) or (imm and 0xFF))
     }
 

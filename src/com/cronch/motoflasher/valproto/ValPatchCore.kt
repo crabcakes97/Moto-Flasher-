@@ -401,7 +401,7 @@ object ValPatchCore {
                 }
                 else -> false
             }
-            if (!ok) throw IllegalArgumentException("bootmode cave word $idx failed $kind gate (0x${word.toString(16)} at VA 0x${va.toString(16)}): refusing")
+            if (!ok) throw IllegalArgumentException("bootmode cave word $idx failed $kind gate (0x${word.toString(16)} at VA 0x${uHex(va)}): refusing")
         }
         val adrpW = ValBytes.u32At(words[5], 0)
         val addW = ValBytes.u32At(words[6], 0)
@@ -409,7 +409,7 @@ object ValPatchCore {
         if (imm and 0x100000L != 0L) imm -= 0x200000L
         val page = (caveVa + 0x14) and -0x1000L
         val resolved = page + imm * 0x1000L + ((addW shr 10) and 0xFFFL)
-        if (resolved != strVa) throw IllegalArgumentException("bootmode adrp/add resolves 0x${resolved.toString(16)} != string 0x${strVa.toString(16)}: refusing")
+        if (resolved != strVa) throw IllegalArgumentException("bootmode adrp/add resolves 0x${uHex(resolved)} != string 0x${uHex(strVa)}: refusing")
         return Triple(out.copyOf(), hookOff, strOff)
     }
 
@@ -461,7 +461,7 @@ object ValPatchCore {
             println("Mode    : EXPERIMENTAL cross-device (unknown build)")
         }
         if (setterVa != lkBase + BOOTMODE_SETTER_OFF && build != null) throw IllegalArgumentException(
-            "setter resolved 0x${setterVa.toString(16)} vs expected 0x${(lkBase + BOOTMODE_SETTER_OFF).toString(16)}: refusing"
+            "setter resolved 0x${uHex(setterVa)} vs expected 0x${uHex(lkBase + BOOTMODE_SETTER_OFF)}: refusing"
         )
         val cave = data.copyOfRange(BOOTMODE_CAVE_OFF, BOOTMODE_CAVE_OFF + BOOTMODE_CAVE_SIZE)
         if (cave.any { it != 0.toByte() }) throw IllegalArgumentException(
@@ -713,7 +713,7 @@ object ValPatchCore {
         for ((label, offset, old, new, _) in gates) {
             patchBytesChecked(data, offset, old, new, label)
             applied.add(GatePatch(label, offset, old, new))
-            val va = if (lkBase != 0L) " VA=0x${(lkBase + offset).toString(16)}" else ""
+            val va = if (lkBase != 0L) " VA=0x${uHex(lkBase + offset)}" else ""
             println("Patch   : $family $label @ 0x${offset.toString(16)} / HxD ${"%08X".format(offset)}$va  ${old.hex()} -> ${new.hex()}")
         }
         return applied
@@ -742,7 +742,7 @@ object ValPatchCore {
         val lkBase = ValAnalysis.tryLoadBase(analysisDir)
         println("Report  : modem-unlock research (REPORT-ONLY, no LK bytes changed)")
         println("LK size : ${data.size} bytes")
-        if (lkBase != 0L) println("LK base : 0x${lkBase.toString(16)}")
+        if (lkBase != 0L) println("LK base : 0x${uHex(lkBase)}")
         val found = modemResearchScan(data)
         for ((label, _) in MODEM_RESEARCH_MARKERS) {
             val offsets = found[label] ?: emptyList()
@@ -751,7 +751,7 @@ object ValPatchCore {
                 continue
             }
             val shown = offsets.take(5).joinToString(", ") {
-                "0x${it.toString(16)} / HxD ${"%08X".format(it)}" + (if (lkBase != 0L) " VA=0x${(lkBase + it).toString(16)}" else "")
+                "0x${it.toString(16)} / HxD ${"%08X".format(it)}" + (if (lkBase != 0L) " VA=0x${uHex(lkBase + it)}" else "")
             }
             val extra = if (offsets.size > 5) " (+${offsets.size - 5} more)" else ""
             println("Marker  : $label x${offsets.size} @ $shown$extra")

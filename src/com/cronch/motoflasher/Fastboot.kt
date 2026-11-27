@@ -15,8 +15,11 @@ import java.security.MessageDigest
  */
 object Fastboot {
 
-    data class Result(val exitCode: Int, val output: String) {
-        val ok: Boolean get() = exitCode == 0 && !output.contains("FAILED")
+    data class Result(val exitCode: Int, val output: String, val rebootDropped: Boolean = false) {
+        // 2.0.12: a reboot-family command whose OKAY never arrived
+        // because the device rebooted first (USB dropped) counts as
+        // success — see run(). rebootDropped carries that verdict.
+        val ok: Boolean get() = (exitCode == 0 && !output.contains("FAILED")) || rebootDropped
     }
 
     private fun binDir(ctx: Context): File = File(ctx.filesDir, "fb")
@@ -66,10 +69,33 @@ object Fastboot {
         // user just sees "waiting". Abort as soon as that line appears
         // (the device is either not there or its fastboot session is
         // stale) and say plainly what to do, instead of hanging.
-        return runSu(cmd, onLine, abortOn = { line ->
+        val r = runSu(cmd, onLine, abortOn = { line ->
             line.contains("waiting for any device", ignoreCase = true) ||
                 line.contains("waiting for device", ignoreCase = true)
         })
+        // 2.0.12: reboot-family false failure (Kyle, on-device: the
+        // phone DID reboot but the log said FAILED). The LK reboots
+        // before/without the OKAY reaching the host, USB drops, and
+        // the client reports "Rebooting FAILED (remote: )". If the
+        // command was sent ("Rebooting"/"Continuing" printed) and the
+        // bootloader did not refuse it (no FAILED (remote: 'msg')),
+        // the dropped connection means the reboot happened — verdict
+        // SUCCESS. The raw lines already logged verbatim via onLine;
+        // only the verdict changes. flash/erase/getvar/oem keep real
+        // failure reporting.
+        val first = args.firstOrNull()?.lowercase().orEmpty()
+        val isReboot = first.startsWith("reboot")
+        val isContinue = first == "continue"
+        if ((isReboot || isContinue) && !r.ok) {
+            val sent = if (isContinue) r.output.contains("Continuing") else r.output.contains("Rebooting")
+            val refused = r.output.contains("FAILED (remote: '")
+            if (sent && !refused) {
+                val note = "(device rebooted — connection dropped before OKAY, that's normal)"
+                onLine(note)
+                return Result(0, r.output + note + "\n", rebootDropped = true)
+            }
+        }
+        return r
     }
 
     /** Run an arbitrary shell command as root. */

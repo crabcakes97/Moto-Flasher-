@@ -197,7 +197,7 @@ object LibLk {
         sb.append("LK container v${image.version}, ${image.partitions.size} partition(s):\n")
         for (p in image.partitions) {
             sb.append("- ${p.name}: ${p.dataSize} bytes")
-            if (p.lkAddress != null) sb.append(" @ 0x${p.lkAddress.toString(16)}")
+            if (p.lkAddress != null) sb.append(" @ 0x${java.lang.Long.toUnsignedString(p.lkAddress, 16)}")
             if (p.isExtended) sb.append(" (ext hdr)")
             if (p.certs.isNotEmpty()) {
                 sb.append(" certs: ${p.certs.joinToString(",") { it.name }}")

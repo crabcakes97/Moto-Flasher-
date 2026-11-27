@@ -179,9 +179,9 @@ object ValReports {
         val arch = ValAnalysis.loadArchitecture(analysisDir)
         println("Report  : ramdump/MRDUMP research (REPORT-ONLY, no LK bytes changed)")
         println("LK size : ${data.size} bytes  arch=$arch")
-        if (lkBase != 0L) println("LK base : 0x${lkBase.toString(16)}") else println("LK base : unknown (offsets only, no VA resolution)")
+        if (lkBase != 0L) println("LK base : 0x${uHex(lkBase)}") else println("LK base : unknown (offsets only, no VA resolution)")
         val scan = ramdumpResearchScan(data, lkBase)
-        fun va(off: Int): String = if (lkBase != 0L) " VA=0x${(lkBase + off).toString(16)}" else ""
+        fun va(off: Int): String = if (lkBase != 0L) " VA=0x${uHex(lkBase + off)}" else ""
         val cmdOffs = scan["cmd_offsets"] as List<Int>
         if (cmdOffs.isNotEmpty()) {
             val shown = cmdOffs.joinToString(", ") { "0x${it.toString(16)} / HxD ${"%08X".format(it)}${va(it)}" }

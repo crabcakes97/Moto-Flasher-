@@ -96,11 +96,19 @@ object ValRepack {
         if (magic != 0x58881688L) throw RepackError(
             "invalid magic at offset 0x${"%x".format(region.start)}: 0x${"%08x".format(magic)}"
         )
+        // 2.0.12: PC-parity repack block (lk_repack_signed.py prints).
+        // Strings only — every value here is already computed above.
+        println("Subimage : $imageName")
+        println("Region : 0x${region.start.toString(16)}-0x${region.end.toString(16)}")
+        println("Payload size : ${patchedPayload.size} bytes")
+        println("Original dsize : ${region.partition.dataSize} bytes")
         val unsignedPatched = replacePayloadInSignedBlock(
             region.partition,
             originalContainer.copyOfRange(region.start, region.end),
             patchedPayload,
         )
+        // 2.0.12: sign_mtk_cert.py's opening line, before ValCert's own log.
+        println("Name: $imageName Size: ${unsignedPatched.size}")
         val signResult = ValCert.sign(unsignedPatched, legacyCert)
         val signedBlock = signResult.signed
         val output = originalContainer.copyOfRange(0, region.start) + signedBlock + originalContainer.copyOfRange(region.end, originalContainer.size)

@@ -498,14 +498,14 @@ object ValPatcher {
                     if (patch["architecture"] != null) println("Arch    : ${patch["architecture"]}")
                     if (opts.keyTokenDebugStop != null) println("Stop    : ${opts.keyTokenDebugStop}")
                     println("Device  : runtime serialno from LK")
-                    println("SerialFn: 0x${(patch["serial_func_offset"] as Int).toString(16)} / HxD ${"%08X".format(patch["serial_func_offset"] as Int)} VA=0x${(patch["serial_func_va"] as Long).toString(16)}")
+                    println("SerialFn: 0x${(patch["serial_func_offset"] as Int).toString(16)} / HxD ${"%08X".format(patch["serial_func_offset"] as Int)} VA=0x${uHex(patch["serial_func_va"] as Long)}")
                     if (patch["masks"] != null) println("Masks   : ${(patch["masks"] as ByteArray).hex()}")
                     if (patch["success_value"] != null) println("Returns : success=${patch["success_value"]} fail=${patch["fail_value"]}")
                     if (patch["debug_log"] as? Boolean == true) {
                         println("Debug   : LKDBG enabled via 0x${(patch["debug_print_func_offset"] as Int?).toString()} / HxD ${"%08X".format(patch["debug_print_func_offset"] as Int? ?: 0)}")
                         val debugMessages = patch["debug_message_vas"] as? Map<*, *>
                         if (debugMessages != null) {
-                            for ((name, va) in debugMessages) println("DbgMsg  : $name=0x${(va as Long).toString(16)}")
+                            for ((name, va) in debugMessages) println("DbgMsg  : $name=0x${uHex(va as Long)}")
                         }
                     }
                 } else if (continueKeyPrint) {

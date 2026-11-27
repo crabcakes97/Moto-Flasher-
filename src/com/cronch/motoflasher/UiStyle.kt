@@ -5,9 +5,17 @@ import android.content.Context
 import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.ColorFilter
+import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.PixelFormat
+import android.graphics.Rect
+import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.StateListDrawable
 import android.text.SpannableString
@@ -43,6 +51,16 @@ import kotlin.math.roundToInt
  * name shown ONCE) and a bottom tab bar (Home / Flash / BROM / Val /
  * ADB / Extras / More). All dialogs, checkboxes and the log row are
  * themed here too, so nothing is left stock.
+ *
+ * 2.0.12 GUI overhaul (Kyle: 2.0.11 "looks cheap like ai made it"):
+ * one accent per theme used sparingly (active tab, section headers,
+ * primary buttons), everything else desaturated grays; chamfered
+ * buttons (cut corners, custom drawable, accent left bar on primary
+ * actions); layered panels (gradient page bg, panel + 1px border +
+ * top highlight); condensed uppercase headings; rebuilt bottom tab
+ * bar (64dp+, Canvas-drawn geometric icons, solid accent active
+ * block, 2dp accent top line); status LEDs beside key status lines.
+ * Skin only — no behavior lives here.
  */
 object UiStyle {
     // Palette (2.0.11 phonk/cyberpunk: near-black base, magenta + blood-red
@@ -54,12 +72,15 @@ object UiStyle {
     // orange-red, Frost = blue). CYAN is the secondary accent.
     var BG: Int = 0xFF07040C.toInt()
     var CARD: Int = 0xFF110A1D.toInt()
-    var CARD_STROKE: Int = 0xFF7B2FFF.toInt()
+    // 2.0.12: borders/secondary are desaturated grays now — the accent
+    // (MAGENTA var, theme-swapped) is the only saturated color besides
+    // semantic red/green/amber and the logo.
+    var CARD_STROKE: Int = 0xFF4A4458.toInt()
     var TEXT: Int = 0xFFF5EFFF.toInt()
-    var TEXT_DIM: Int = 0xFFB9A8D6.toInt()
+    var TEXT_DIM: Int = 0xFFA79FB5.toInt()
     var MAGENTA: Int = 0xFFFF2E88.toInt()
     var MAGENTA_PRESSED: Int = 0xFFD11B6E.toInt()
-    var PURPLE: Int = 0xFF7B2FFF.toInt()
+    var PURPLE: Int = 0xFF9A93A8.toInt()
     var CYAN: Int = 0xFF00E5FF.toInt()
     var CYAN_DIM: Int = 0xFF00B8D4.toInt()
     var SUN_TOP: Int = 0xFFFF2E88.toInt()
@@ -67,11 +88,14 @@ object UiStyle {
     var SUN_BOTTOM: Int = 0xFFFFD600.toInt()
     var DANGER: Int = 0xFFE8112D.toInt()
     var DANGER_PRESSED: Int = 0xFFA30D20.toInt()
-    var GHOST: Int = 0xFF1B1230.toInt()
-    var GHOST_PRESSED: Int = 0xFF2A1B4A.toInt()
+    var GHOST: Int = 0xFF1E1B26.toInt()
+    var GHOST_PRESSED: Int = 0xFF2E2A3A.toInt()
     var GREEN: Int = 0xFF69F0AE.toInt()
     var AMBER: Int = 0xFFFFD600.toInt()
     var RED: Int = 0xFFFF5252.toInt()
+    // 2.0.12: status LED "unknown" gray + dark text/icon on solid accent.
+    var LED_OFF: Int = 0xFF6B6B6B.toInt()
+    var ON_ACCENT: Int = 0xFF0A0A0E.toInt()
     var LOG_BG: Int = 0xFF050208.toInt()
     var LOG_TEXT: Int = 0xFF4DFF88.toInt()
     // Input-field fill + hint (follow the card colour per theme).
@@ -84,37 +108,37 @@ object UiStyle {
     fun applyTheme(name: String) {
         when (name) {
             "ember" -> {
-                BG = 0xFF0D0503.toInt(); CARD = 0xFF1E0D07.toInt(); CARD_STROKE = 0xFFFF5722.toInt()
-                TEXT = 0xFFFFF1E6.toInt(); TEXT_DIM = 0xFFD8A48F.toInt()
+                BG = 0xFF0D0503.toInt(); CARD = 0xFF1E0D07.toInt(); CARD_STROKE = 0xFF57463E.toInt()
+                TEXT = 0xFFFFF1E6.toInt(); TEXT_DIM = 0xFFB3A196.toInt()
                 MAGENTA = 0xFFFF5722.toInt(); MAGENTA_PRESSED = 0xFFD84315.toInt()
-                PURPLE = 0xFFFF8A50.toInt(); CYAN = 0xFFFFD600.toInt(); CYAN_DIM = 0xFFFFAB00.toInt()
+                PURPLE = 0xFFA89890.toInt(); CYAN = 0xFFFFD600.toInt(); CYAN_DIM = 0xFFFFAB00.toInt()
                 SUN_TOP = 0xFFFF5722.toInt(); SUN_MID = 0xFFFF7A18.toInt(); SUN_BOTTOM = 0xFFFFD600.toInt()
                 DANGER = 0xFFE8112D.toInt(); DANGER_PRESSED = 0xFFA30D20.toInt()
-                GHOST = 0xFF2A130B.toInt(); GHOST_PRESSED = 0xFF3D1C10.toInt()
+                GHOST = 0xFF241B16.toInt(); GHOST_PRESSED = 0xFF38291F.toInt()
                 GREEN = 0xFF69F0AE.toInt(); AMBER = 0xFFFFD600.toInt(); RED = 0xFFFF5252.toInt()
                 LOG_BG = 0xFF080302.toInt(); LOG_TEXT = 0xFFFFAB91.toInt()
                 INPUT_BG = 0xFF241005.toInt(); INPUT_HINT = 0xFFC08A6E.toInt()
             }
             "frost" -> {
-                BG = 0xFF030A10.toInt(); CARD = 0xFF0A1A28.toInt(); CARD_STROKE = 0xFF00B0FF.toInt()
-                TEXT = 0xFFEAF6FF.toInt(); TEXT_DIM = 0xFF9DBED6.toInt()
+                BG = 0xFF030A10.toInt(); CARD = 0xFF0A1A28.toInt(); CARD_STROKE = 0xFF3D5266.toInt()
+                TEXT = 0xFFEAF6FF.toInt(); TEXT_DIM = 0xFF9FB2C2.toInt()
                 MAGENTA = 0xFF00B0FF.toInt(); MAGENTA_PRESSED = 0xFF0077C2.toInt()
-                PURPLE = 0xFF2979FF.toInt(); CYAN = 0xFF40C4FF.toInt(); CYAN_DIM = 0xFF0091EA.toInt()
+                PURPLE = 0xFF8FA3B5.toInt(); CYAN = 0xFF40C4FF.toInt(); CYAN_DIM = 0xFF0091EA.toInt()
                 SUN_TOP = 0xFF00B0FF.toInt(); SUN_MID = 0xFF2979FF.toInt(); SUN_BOTTOM = 0xFF7C4DFF.toInt()
                 DANGER = 0xFFE8112D.toInt(); DANGER_PRESSED = 0xFFA30D20.toInt()
-                GHOST = 0xFF0B1B29.toInt(); GHOST_PRESSED = 0xFF12293D.toInt()
+                GHOST = 0xFF16222E.toInt(); GHOST_PRESSED = 0xFF22364A.toInt()
                 GREEN = 0xFF69F0AE.toInt(); AMBER = 0xFFFFD600.toInt(); RED = 0xFFFF5252.toInt()
                 LOG_BG = 0xFF02080F.toInt(); LOG_TEXT = 0xFF4DFF88.toInt()
                 INPUT_BG = 0xFF0A1F33.toInt(); INPUT_HINT = 0xFF6E93B0.toInt()
             }
             else -> { // neon (default): phonk / cyberpunk bleak
-                BG = 0xFF07040C.toInt(); CARD = 0xFF110A1D.toInt(); CARD_STROKE = 0xFF7B2FFF.toInt()
-                TEXT = 0xFFF5EFFF.toInt(); TEXT_DIM = 0xFFB9A8D6.toInt()
+                BG = 0xFF07040C.toInt(); CARD = 0xFF110A1D.toInt(); CARD_STROKE = 0xFF4A4458.toInt()
+                TEXT = 0xFFF5EFFF.toInt(); TEXT_DIM = 0xFFA79FB5.toInt()
                 MAGENTA = 0xFFFF2E88.toInt(); MAGENTA_PRESSED = 0xFFD11B6E.toInt()
-                PURPLE = 0xFF7B2FFF.toInt(); CYAN = 0xFF00E5FF.toInt(); CYAN_DIM = 0xFF00B8D4.toInt()
+                PURPLE = 0xFF9A93A8.toInt(); CYAN = 0xFF00E5FF.toInt(); CYAN_DIM = 0xFF00B8D4.toInt()
                 SUN_TOP = 0xFFFF2E88.toInt(); SUN_MID = 0xFFFF7A18.toInt(); SUN_BOTTOM = 0xFFFFD600.toInt()
                 DANGER = 0xFFE8112D.toInt(); DANGER_PRESSED = 0xFFA30D20.toInt()
-                GHOST = 0xFF1B1230.toInt(); GHOST_PRESSED = 0xFF2A1B4A.toInt()
+                GHOST = 0xFF1E1B26.toInt(); GHOST_PRESSED = 0xFF2E2A3A.toInt()
                 GREEN = 0xFF69F0AE.toInt(); AMBER = 0xFFFFD600.toInt(); RED = 0xFFFF5252.toInt()
                 LOG_BG = 0xFF050208.toInt(); LOG_TEXT = 0xFF4DFF88.toInt()
                 INPUT_BG = 0xFF160C28.toInt(); INPUT_HINT = 0xFF9A86C2.toInt()
@@ -154,6 +178,13 @@ object UiStyle {
         else v.setTypeface(Typeface.SANS_SERIF, if (bold) Typeface.BOLD else Typeface.NORMAL)
     }
 
+    /** 2.0.12: headings get a condensed feel — sans-serif-condensed
+     *  bold where the device has it (Typeface.create falls back to the
+     *  default sans when the family is missing, never throws). */
+    fun applyHeadingFont(v: TextView) {
+        v.typeface = Typeface.create("sans-serif-condensed", Typeface.BOLD)
+    }
+
     /** Rainbow per-character span, like the neon LK banner text. */
     fun rainbow(text: String): CharSequence {
         if (text.isEmpty()) return text
@@ -177,28 +208,125 @@ object UiStyle {
     }
 
     /**
-     * 2.0.11: angular button background. Sharp corners (2dp), dark fill
-     * (accent blended toward black), thin 1dp neon border in the accent
-     * colour. Pressed = solid accent fill (invert). No soft pills.
+     * 2.0.12: chamfered button background — cut corners (~6dp), dark
+     * fill (accent blended toward black), 1.5dp border in the accent
+     * colour, optional 3dp accent bar on the left edge (primary
+     * actions). Pressed = solid accent fill (invert). Custom drawable:
+     * GradientDrawable cannot cut corners.
      */
-    private fun angular(accent: Int, pressed: Int, ctx: Context): StateListDrawable {
-        val normal = GradientDrawable().apply {
-            shape = GradientDrawable.RECTANGLE
-            cornerRadius = ctx.dp(2).toFloat()
-            setColor(blend(accent, Color.BLACK, 0.78f))
-            setStroke(ctx.dp(1), accent)
+    class ChamferDrawable(
+        private val fill: Int,
+        private val border: Int,
+        private val borderPx: Float,
+        private val chamferPx: Float,
+        private val leftBar: Int = 0,
+        private val leftBarPx: Float = 0f,
+    ) : Drawable() {
+        private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = fill; style = Paint.Style.FILL }
+        private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = border; style = Paint.Style.STROKE; strokeWidth = borderPx }
+        private val barPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = leftBar; style = Paint.Style.FILL }
+        private val path = Path()
+
+        override fun onBoundsChange(bounds: Rect) {
+            super.onBoundsChange(bounds)
+            val l = bounds.left + borderPx / 2
+            val t = bounds.top + borderPx / 2
+            val r = bounds.right - borderPx / 2
+            val b = bounds.bottom - borderPx / 2
+            val c = chamferPx
+            path.reset()
+            path.moveTo(l + c, t)
+            path.lineTo(r - c, t); path.lineTo(r, t + c)
+            path.lineTo(r, b - c); path.lineTo(r - c, b)
+            path.lineTo(l + c, b); path.lineTo(l, b - c)
+            path.lineTo(l, t + c)
+            path.close()
         }
-        val down = GradientDrawable().apply {
-            shape = GradientDrawable.RECTANGLE
-            cornerRadius = ctx.dp(2).toFloat()
-            setColor(pressed)
-            setStroke(ctx.dp(1), accent)
+
+        override fun draw(canvas: Canvas) {
+            canvas.drawPath(path, fillPaint)
+            if (leftBarPx > 0f) {
+                canvas.save()
+                canvas.clipPath(path)
+                canvas.drawRect(
+                    bounds.left.toFloat(), bounds.top.toFloat(),
+                    bounds.left + leftBarPx, bounds.bottom.toFloat(), barPaint,
+                )
+                canvas.restore()
+            }
+            canvas.drawPath(path, borderPaint)
         }
+
+        override fun setAlpha(alpha: Int) {
+            fillPaint.alpha = alpha; borderPaint.alpha = alpha; barPaint.alpha = alpha
+        }
+
+        override fun setColorFilter(cf: ColorFilter?) {
+            fillPaint.colorFilter = cf; borderPaint.colorFilter = cf; barPaint.colorFilter = cf
+        }
+
+        @Deprecated("deprecated in API 29")
+        override fun getOpacity(): Int = PixelFormat.OPAQUE
+    }
+
+    /**
+     * 2.0.12: layered panel — fill one step lighter than the page,
+     * 1px border, lighter 1px highlight along the top edge for depth.
+     */
+    class PanelDrawable(
+        private val fill: Int,
+        private val border: Int,
+        private val highlight: Int,
+        private val radiusPx: Float,
+        private val borderPx: Float,
+    ) : Drawable() {
+        private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = fill; style = Paint.Style.FILL }
+        private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = border; style = Paint.Style.STROKE; strokeWidth = borderPx }
+        private val hlPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = highlight; style = Paint.Style.STROKE; strokeWidth = borderPx }
+
+        override fun draw(canvas: Canvas) {
+            val b = bounds
+            val r = RectF(
+                b.left + borderPx / 2, b.top + borderPx / 2,
+                b.right - borderPx / 2, b.bottom - borderPx / 2,
+            )
+            canvas.drawRoundRect(r, radiusPx, radiusPx, fillPaint)
+            canvas.drawRoundRect(r, radiusPx, radiusPx, borderPaint)
+            canvas.drawLine(r.left + radiusPx, r.top + borderPx, r.right - radiusPx, r.top + borderPx, hlPaint)
+        }
+
+        override fun setAlpha(alpha: Int) {
+            fillPaint.alpha = alpha; borderPaint.alpha = alpha; hlPaint.alpha = alpha
+        }
+
+        override fun setColorFilter(cf: ColorFilter?) {
+            fillPaint.colorFilter = cf; borderPaint.colorFilter = cf; hlPaint.colorFilter = cf
+        }
+
+        @Deprecated("deprecated in API 29")
+        override fun getOpacity(): Int = PixelFormat.OPAQUE
+    }
+
+    /** Chamfered button background, normal + pressed (invert) states. */
+    private fun chamfered(accent: Int, pressed: Int, ctx: Context, primary: Boolean = false): StateListDrawable {
+        val density = ctx.resources.displayMetrics.density
+        val borderPx = 1.5f * density
+        val chamferPx = ctx.dp(6).toFloat()
+        val barPx = if (primary) ctx.dp(3).toFloat() else 0f
+        val normal = ChamferDrawable(blend(accent, Color.BLACK, 0.78f), accent, borderPx, chamferPx, accent, barPx)
+        val down = ChamferDrawable(pressed, accent, borderPx, chamferPx, accent, barPx)
         return StateListDrawable().apply {
             addState(intArrayOf(android.R.attr.state_pressed), down)
             addState(intArrayOf(), normal)
         }
     }
+
+    /** Page background: near-black with a subtle vertical gradient,
+     *  darker toward the bottom. Panels sit one step lighter on top. */
+    fun pageBackground(): GradientDrawable = GradientDrawable(
+        GradientDrawable.Orientation.TOP_BOTTOM,
+        intArrayOf(BG, blend(BG, Color.BLACK, 0.55f)),
+    ).apply { shape = GradientDrawable.RECTANGLE }
 
     /** Magenta sun gradient: the app banner background (logo only). */
     fun bannerBackground(ctx: Context): GradientDrawable = GradientDrawable(
@@ -238,37 +366,37 @@ object UiStyle {
             })
         }
 
-    /** One section card: sharp-cornered panel with a thin neon border. */
+    /** One section card: layered panel (fill + 1px border + top
+     *  highlight), 16dp padding, 12dp gap below. */
     fun card(ctx: Context): LinearLayout = LinearLayout(ctx).apply {
         orientation = LinearLayout.VERTICAL
-        background = GradientDrawable().apply {
-            shape = GradientDrawable.RECTANGLE
-            cornerRadius = ctx.dp(2).toFloat()
-            setColor(CARD)
-            setStroke(ctx.dp(1), CARD_STROKE)
-        }
-        setPadding(ctx.dp(18), ctx.dp(18), ctx.dp(18), ctx.dp(18))
+        background = PanelDrawable(
+            CARD, CARD_STROKE, blend(CARD, Color.WHITE, 0.16f),
+            ctx.dp(2).toFloat(), ctx.dp(1).toFloat(),
+        )
+        setPadding(ctx.dp(16), ctx.dp(16), ctx.dp(16), ctx.dp(16))
         layoutParams = LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT,
             LinearLayout.LayoutParams.WRAP_CONTENT,
-        ).apply { bottomMargin = ctx.dp(14) }
+        ).apply { bottomMargin = ctx.dp(12) }
     }
 
-    /** Section header inside a card — solid neon, uppercase, letter-spaced. */
+    /** Section header inside a card — condensed bold, accent colour,
+     *  uppercase, letter-spaced. One pattern everywhere: accent text
+     *  + full-width accent rule (divider below). */
     fun sectionTitle(ctx: Context, text: String): TextView = TextView(ctx).apply {
         this.text = text
         isAllCaps = true
         letterSpacing = 0.08f
-        textSize = 17f
+        textSize = 18f
         setTextColor(MAGENTA)
-        applyFont(ctx, this, bold = true)
+        applyHeadingFont(this)
         setPadding(0, 0, 0, ctx.dp(4))
     }
 
-    /** Thin cyan divider under a section header. */
+    /** Full-width accent rule under a section header. */
     fun divider(ctx: Context): View = View(ctx).apply {
-        setBackgroundColor(CYAN)
-        alpha = 0.7f
+        setBackgroundColor(MAGENTA)
         layoutParams = LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, ctx.dp(2),
         ).apply { bottomMargin = ctx.dp(10) }
@@ -292,13 +420,27 @@ object UiStyle {
         setPadding(0, ctx.dp(4), 0, ctx.dp(4))
     }
 
+    /** Status line with a small square LED on the left (gray =
+     *  unknown until setLed/setStatus says otherwise). The LED is a
+     *  compound drawable, so every existing text set keeps working. */
+    fun ledStatus(ctx: Context, initial: String): TextView = status(ctx, initial).apply {
+        val led = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            setColor(LED_OFF)
+            setBounds(0, 0, ctx.dp(10), ctx.dp(10))
+        }
+        setCompoundDrawables(led, null, null, null)
+        compoundDrawablePadding = ctx.dp(8)
+    }
+
     private fun styledButton(
-        ctx: Context, text: String, accent: Int, pressed: Int, fn: () -> Unit, row: Boolean = false,
+        ctx: Context, text: String, accent: Int, pressed: Int, fn: () -> Unit,
+        row: Boolean = false, primary: Boolean = false,
     ): Button = Button(ctx).apply {
         this.text = text
         isAllCaps = true
         letterSpacing = 0.06f
-        background = angular(accent, pressed, ctx)
+        background = chamfered(accent, pressed, ctx, primary)
         setTextColor(Color.WHITE)
         applyFont(ctx, this, bold = true)
         textSize = 15f
@@ -326,21 +468,21 @@ object UiStyle {
         setOnClickListener { fn() }
     }
 
-    /** Primary action button (flash, pick, connect, read) — magenta. */
+    /** Primary action button (flash, pick, connect, read) — theme accent, left bar. */
     fun actionButton(ctx: Context, text: String, fn: () -> Unit): Button =
-        styledButton(ctx, text, MAGENTA, MAGENTA_PRESSED, fn)
+        styledButton(ctx, text, MAGENTA, MAGENTA_PRESSED, fn, primary = true)
 
-    /** Destructive button (erase, relock, unlock, write) — red. */
+    /** Destructive button (erase, relock, unlock, write) — red, left bar. */
     fun dangerButton(ctx: Context, text: String, fn: () -> Unit): Button =
-        styledButton(ctx, text, DANGER, DANGER_PRESSED, fn)
+        styledButton(ctx, text, DANGER, DANGER_PRESSED, fn, primary = true)
 
-    /** Secondary button (refresh, status checks) — dark violet, purple border. */
+    /** Secondary button (refresh, status checks) — gray border, no bar. */
     fun ghostButton(ctx: Context, text: String, fn: () -> Unit): Button =
         styledButton(ctx, text, PURPLE, GHOST_PRESSED, fn)
 
-    /** Cyan accent button (BROM connect / blankflash runs). */
+    /** BROM primary button (connect / blankflash runs) — theme accent, left bar. */
     fun bromButton(ctx: Context, text: String, fn: () -> Unit): Button =
-        styledButton(ctx, text, CYAN_DIM, 0xFF00838F.toInt(), fn)
+        styledButton(ctx, text, MAGENTA, MAGENTA_PRESSED, fn, primary = true)
 
     /** Secondary button sized to share a horizontal row evenly. */
     fun rowButton(ctx: Context, text: String, fn: () -> Unit): Button =
@@ -348,11 +490,11 @@ object UiStyle {
 
     /** Primary button sized to share a horizontal row evenly. */
     fun rowActionButton(ctx: Context, text: String, fn: () -> Unit): Button =
-        styledButton(ctx, text, MAGENTA, MAGENTA_PRESSED, fn, row = true)
+        styledButton(ctx, text, MAGENTA, MAGENTA_PRESSED, fn, row = true, primary = true)
 
     /** Destructive button sized to share a horizontal row evenly. */
     fun rowDangerButton(ctx: Context, text: String, fn: () -> Unit): Button =
-        styledButton(ctx, text, DANGER, DANGER_PRESSED, fn, row = true)
+        styledButton(ctx, text, DANGER, DANGER_PRESSED, fn, row = true, primary = true)
 
     /** Secondary button sized to share a horizontal row evenly. */
     fun rowGhostButton(ctx: Context, text: String, fn: () -> Unit): Button =
@@ -370,7 +512,7 @@ object UiStyle {
         this.text = text
         isAllCaps = true
         letterSpacing = 0.04f
-        background = angular(PURPLE, GHOST_PRESSED, ctx)
+        background = chamfered(PURPLE, GHOST_PRESSED, ctx)
         setTextColor(Color.WHITE)
         applyFont(ctx, this, bold = true)
         textSize = 13f
@@ -398,17 +540,14 @@ object UiStyle {
             setOnCheckedChangeListener { _, c -> onChange(c) }
         }
 
-    /** Dark sharp input with a border. Fill + hint follow the theme. */
+    /** Dark chamfered input with a gray border. Fill + hint follow the theme. */
     fun input(ctx: Context, hint: String, initial: String? = null): EditText =
         EditText(ctx).apply {
             this.hint = hint
             if (initial != null) setText(initial)
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                cornerRadius = ctx.dp(2).toFloat()
-                setColor(INPUT_BG)
-                setStroke(ctx.dp(1), PURPLE)
-            }
+            background = ChamferDrawable(
+                INPUT_BG, PURPLE, ctx.dp(1).toFloat(), ctx.dp(6).toFloat(),
+            )
             setTextColor(TEXT)
             setHintTextColor(INPUT_HINT)
             applyFont(ctx, this)
@@ -442,11 +581,12 @@ object UiStyle {
         return logoBanner
     }
 
-    /** The top app bar: logo banner (carries the name — shown ONCE) +
-     *  small version + live root status. No second title. */
-    data class AppBar(val bar: LinearLayout, val statusText: TextView)
+    /** The top app bar: logo banner only (carries the name — shown ONCE).
+     *  2.0.12: the right side (version + root status) is gone — Kyle's
+     *  order. Root state still shows in the Home Status card. */
+    data class AppBar(val bar: LinearLayout)
 
-    fun appBar(ctx: Context, versionName: String): AppBar {
+    fun appBar(ctx: Context): AppBar {
         val row = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -475,27 +615,6 @@ object UiStyle {
                 }
             })
         }
-        val sideCol = LinearLayout(ctx).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.END
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-        }
-        sideCol.addView(TextView(ctx).apply {
-            text = "$versionName • Penumbra engine"
-            textSize = 12f
-            letterSpacing = 0.04f
-            setTextColor(TEXT_DIM)
-            applyFont(ctx, this)
-        })
-        val status = TextView(ctx).apply {
-            text = "Starting…"
-            textSize = 12f
-            letterSpacing = 0.04f
-            setTextColor(AMBER)
-            applyFont(ctx, this, bold = true)
-        }
-        sideCol.addView(status)
-        row.addView(sideCol)
         val bar = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
             addView(row)
@@ -506,40 +625,111 @@ object UiStyle {
                 )
             })
         }
-        return AppBar(bar, status)
+        return AppBar(bar)
+    }
+
+    /** Geometric tab icon drawn with Canvas — no emoji, no assets.
+     *  Kinds by tab position: 0 house, 1 bolt, 2 chip, 3 key,
+     *  4 terminal </>, 5 2x2 grid, 6 three dots. Simple stroke
+     *  shapes (~1.8dp) on a 24-unit design grid. */
+    class TabIconView(ctx: Context, private val kind: Int) : View(ctx) {
+        var iconColor: Int = TEXT_DIM
+            set(v) { field = v; invalidate() }
+
+        private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeCap = Paint.Cap.ROUND
+            strokeJoin = Paint.Join.ROUND
+        }
+        private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
+        private val path = Path()
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            val w = width.toFloat()
+            val h = height.toFloat()
+            val s = minOf(w, h) / 24f
+            val ox = (w - 24f * s) / 2f
+            val oy = (h - 24f * s) / 2f
+            fun x(v: Float) = ox + v * s
+            fun y(v: Float) = oy + v * s
+            strokePaint.color = iconColor
+            strokePaint.strokeWidth = 1.8f * resources.displayMetrics.density
+            fillPaint.color = iconColor
+            path.reset()
+            when (kind) {
+                0 -> { // house: roof + walls
+                    path.moveTo(x(4f), y(11f)); path.lineTo(x(12f), y(4f)); path.lineTo(x(20f), y(11f))
+                    path.moveTo(x(6f), y(9.5f)); path.lineTo(x(6f), y(20f)); path.lineTo(x(18f), y(20f)); path.lineTo(x(18f), y(9.5f))
+                    canvas.drawPath(path, strokePaint)
+                }
+                1 -> { // bolt
+                    path.moveTo(x(13f), y(2f)); path.lineTo(x(5f), y(13f)); path.lineTo(x(11f), y(13f))
+                    path.lineTo(x(9f), y(22f)); path.lineTo(x(19f), y(10f)); path.lineTo(x(13f), y(10f))
+                    path.close()
+                    canvas.drawPath(path, strokePaint)
+                }
+                2 -> { // chip: square + pins + inner square
+                    canvas.drawRect(x(7f), y(7f), x(17f), y(17f), strokePaint)
+                    canvas.drawRect(x(10.5f), y(10.5f), x(13.5f), y(13.5f), strokePaint)
+                    for (p in listOf(9.5f, 12f, 14.5f)) {
+                        canvas.drawLine(x(p), y(3.5f), x(p), y(7f), strokePaint)
+                        canvas.drawLine(x(p), y(17f), x(p), y(20.5f), strokePaint)
+                        canvas.drawLine(x(3.5f), y(p), x(7f), y(p), strokePaint)
+                        canvas.drawLine(x(17f), y(p), x(20.5f), y(p), strokePaint)
+                    }
+                }
+                3 -> { // key: ring + shaft + teeth
+                    canvas.drawCircle(x(8f), y(12f), 4f * s, strokePaint)
+                    canvas.drawLine(x(12f), y(12f), x(20f), y(12f), strokePaint)
+                    canvas.drawLine(x(16f), y(12f), x(16f), y(16f), strokePaint)
+                    canvas.drawLine(x(20f), y(12f), x(20f), y(15f), strokePaint)
+                }
+                4 -> { // terminal </>
+                    path.moveTo(x(9f), y(7f)); path.lineTo(x(4f), y(12f)); path.lineTo(x(9f), y(17f))
+                    path.moveTo(x(15f), y(7f)); path.lineTo(x(20f), y(12f)); path.lineTo(x(15f), y(17f))
+                    path.moveTo(x(13.5f), y(5f)); path.lineTo(x(10.5f), y(19f))
+                    canvas.drawPath(path, strokePaint)
+                }
+                5 -> { // 2x2 grid
+                    canvas.drawRect(x(4f), y(4f), x(11f), y(11f), strokePaint)
+                    canvas.drawRect(x(13f), y(4f), x(20f), y(11f), strokePaint)
+                    canvas.drawRect(x(4f), y(13f), x(11f), y(20f), strokePaint)
+                    canvas.drawRect(x(13f), y(13f), x(20f), y(20f), strokePaint)
+                }
+                else -> { // three dots
+                    for (cx in listOf(5.5f, 12f, 18.5f)) {
+                        canvas.drawCircle(x(cx), y(12f), 2f * s, fillPaint)
+                    }
+                }
+            }
+        }
     }
 
     /** Bottom navigation bar for the app shell.
-     *  2.0.11: angular cells (sharp corners), active cell = dark fill +
-     *  magenta border + solid magenta underline bar, uppercase labels. */
+     *  2.0.12: taller bar (64dp+ cells), geometric icon + label per
+     *  tab, active tab = solid accent block with dark icon/text,
+     *  inactive = dim gray on near-black, 2dp accent line along the
+     *  top edge. */
     class TabBar(
         val view: LinearLayout,
         private val labels: List<TextView>,
-        private val underlines: List<View>,
+        private val icons: List<TabIconView>,
         private val cells: List<LinearLayout>,
     ) {
         fun select(index: Int) {
             labels.forEachIndexed { i, label ->
-                label.setTextColor(if (i == index) MAGENTA else TEXT_DIM)
+                label.setTextColor(if (i == index) ON_ACCENT else TEXT_DIM)
             }
-            underlines.forEachIndexed { i, line ->
-                line.background = if (i == index) {
-                    GradientDrawable().apply {
-                        shape = GradientDrawable.RECTANGLE
-                        setColor(MAGENTA)
-                    }
-                } else {
-                    ColorDrawable(BG)
-                }
+            icons.forEachIndexed { i, icon ->
+                icon.iconColor = if (i == index) ON_ACCENT else TEXT_DIM
             }
             cells.forEachIndexed { i, cell ->
                 cell.background = if (i == index) {
-                    GradientDrawable().apply {
-                        shape = GradientDrawable.RECTANGLE
-                        cornerRadius = view.context.dp(2).toFloat()
-                        setColor(GHOST)
-                        setStroke(view.context.dp(1), MAGENTA)
-                    }
+                    ChamferDrawable(
+                        MAGENTA, MAGENTA,
+                        view.context.dp(1).toFloat(), view.context.dp(4).toFloat(),
+                    )
                 } else {
                     ColorDrawable(Color.TRANSPARENT)
                 }
@@ -549,67 +739,70 @@ object UiStyle {
 
     fun tabBar(ctx: Context, titles: List<String>, onSelect: (Int) -> Unit): TabBar {
         val labels = mutableListOf<TextView>()
-        val underlines = mutableListOf<View>()
+        val icons = mutableListOf<TabIconView>()
         val cells = mutableListOf<LinearLayout>()
-        val bar = LinearLayout(ctx).apply {
+        val row = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                setColor(CARD)
-                setStroke(ctx.dp(1), CARD_STROKE)
-            }
-            setPadding(ctx.dp(4), ctx.dp(10), ctx.dp(4), ctx.dp(10))
+            setBackgroundColor(CARD)
+            setPadding(ctx.dp(4), 0, ctx.dp(4), 0)
         }
         titles.forEachIndexed { i, title ->
+            val icon = TabIconView(ctx, i).apply {
+                layoutParams = LinearLayout.LayoutParams(ctx.dp(26), ctx.dp(26))
+                iconColor = if (i == 0) ON_ACCENT else TEXT_DIM
+            }
             val label = TextView(ctx).apply {
                 text = title
                 isAllCaps = true
-                textSize = 13f
-                letterSpacing = 0.05f
-                applyFont(ctx, this, bold = true)
+                textSize = 11f
+                letterSpacing = 0.06f
+                applyHeadingFont(this)
                 gravity = Gravity.CENTER
-                setTextColor(if (i == 0) MAGENTA else TEXT_DIM)
-            }
-            val underline = View(ctx).apply {
-                background = if (i == 0) {
-                    GradientDrawable().apply {
-                        shape = GradientDrawable.RECTANGLE
-                        setColor(MAGENTA)
-                    }
-                } else {
-                    ColorDrawable(BG)
-                }
+                setTextColor(if (i == 0) ON_ACCENT else TEXT_DIM)
                 layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT, ctx.dp(3),
-                ).apply { topMargin = ctx.dp(4) }
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                ).apply { topMargin = ctx.dp(3) }
             }
             val cell = LinearLayout(ctx).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                setPadding(0, ctx.dp(4), 0, ctx.dp(2))
-                // First tab is active at build time: give it the filled
-                // cell background now; select() takes over after that.
+                minimumHeight = ctx.dp(64)
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    leftMargin = ctx.dp(2)
+                    rightMargin = ctx.dp(2)
+                    topMargin = ctx.dp(4)
+                    bottomMargin = ctx.dp(4)
+                }
+                setPadding(0, ctx.dp(6), 0, ctx.dp(6))
+                // First tab is active at build time: solid accent block
+                // now; select() takes over after that.
                 background = if (i == 0) {
-                    GradientDrawable().apply {
-                        shape = GradientDrawable.RECTANGLE
-                        cornerRadius = ctx.dp(2).toFloat()
-                        setColor(GHOST)
-                        setStroke(ctx.dp(1), MAGENTA)
-                    }
+                    ChamferDrawable(MAGENTA, MAGENTA, ctx.dp(1).toFloat(), ctx.dp(4).toFloat())
                 } else {
                     ColorDrawable(Color.TRANSPARENT)
                 }
                 setOnClickListener { onSelect(i) }
+                addView(icon)
                 addView(label)
-                addView(underline)
             }
             labels.add(label)
-            underlines.add(underline)
+            icons.add(icon)
             cells.add(cell)
-            bar.addView(cell)
+            row.addView(cell)
         }
-        return TabBar(bar, labels, underlines, cells)
+        val bar = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            // 2dp accent line along the top edge of the bar.
+            addView(View(ctx).apply {
+                setBackgroundColor(MAGENTA)
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, ctx.dp(2),
+                )
+            })
+            addView(row)
+        }
+        return TabBar(bar, labels, icons, cells)
     }
 
     /** Themed confirm dialog: dark sharp card, solid neon title, Exo 2,
@@ -621,21 +814,19 @@ object UiStyle {
         val dialog = AlertDialog.Builder(ctx).create()
         val body = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                cornerRadius = ctx.dp(2).toFloat()
-                setColor(CARD)
-                setStroke(ctx.dp(1), CARD_STROKE)
-            }
+            background = PanelDrawable(
+                CARD, CARD_STROKE, blend(CARD, Color.WHITE, 0.16f),
+                ctx.dp(2).toFloat(), ctx.dp(1).toFloat(),
+            )
             setPadding(ctx.dp(20), ctx.dp(20), ctx.dp(20), ctx.dp(16))
         }
         body.addView(TextView(ctx).apply {
             text = title
             isAllCaps = true
             letterSpacing = 0.06f
-            textSize = 17f
+            textSize = 18f
             setTextColor(MAGENTA)
-            applyFont(ctx, this, bold = true)
+            applyHeadingFont(this)
             setPadding(0, 0, 0, ctx.dp(8))
         })
         body.addView(TextView(ctx).apply {
@@ -666,6 +857,20 @@ fun TextView.setStatus(kind: UiStyle.Status) {
             UiStyle.Status.WAIT -> UiStyle.AMBER
             UiStyle.Status.FAIL -> UiStyle.RED
             UiStyle.Status.INFO -> UiStyle.TEXT
+        },
+    )
+    setLed(kind)
+}
+
+/** Color only the LED square on a ledStatus line (no-op on plain
+ *  status lines, which have no compound drawable). */
+fun TextView.setLed(kind: UiStyle.Status) {
+    (compoundDrawables[0] as? GradientDrawable)?.setColor(
+        when (kind) {
+            UiStyle.Status.OK -> UiStyle.GREEN
+            UiStyle.Status.WAIT -> UiStyle.AMBER
+            UiStyle.Status.FAIL -> UiStyle.RED
+            UiStyle.Status.INFO -> UiStyle.LED_OFF
         },
     )
 }

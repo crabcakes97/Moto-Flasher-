@@ -94,7 +94,7 @@ object ValAnalysis {
             val raw = flow.str("start_address", "0") ?: "0"
             if (parseHexLong(raw) == startAddress) return flow
         }
-        throw ValAnalysisException("no flow candidate found for 0x${startAddress.toString(16)}")
+        throw ValAnalysisException("no flow candidate found for 0x${uHex(startAddress)}")
     }
 
     fun loadPartitionArgOffsets(analysisDir: File, oldName: String): List<JsonObj> {

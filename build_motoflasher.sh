@@ -1,5 +1,5 @@
 #!/bin/bash
-# Moto Flasher 2.0.11 — verbose Val patch output in the app log + phonk/cyberpunk GUI revamp + short-text pass (Kyle's orders 2026-11-27). Same hand build as 2.0.6 (aapt2 + kotlinc + d8). No Gradle.
+# Moto Flasher 2.0.12 — title bar right side removed (Kyle, 2026-11-27). Same hand build as 2.0.6 (aapt2 + kotlinc + d8). No Gradle.
 # Keystore lives in this dir only, never inside the APK.
 # Assets (bundled fastboot + adb binaries + .so deps + Antumbra) must be staged first:
 #   assets/fastboot  +  assets/adb  +  assets/lib/*.so  +  assets/rootusb
@@ -139,10 +139,10 @@ PYEOF
 # --- align + sign ---
 "$BT/zipalign" -f 4 "$TMP/unsigned.apk" "$TMP/aligned.apk"
 "$BT/apksigner" sign --ks "$KS" --ks-pass pass:cronch123 --key-pass pass:cronch123 \
-    --out "$ROOT/MotoFlasher-2.0.11.apk" "$TMP/aligned.apk"
+    --out "$ROOT/MotoFlasher-2.0.12.apk" "$TMP/aligned.apk"
 
 echo "=== verify ==="
-"$BT/apksigner" verify --print-certs "$ROOT/MotoFlasher-2.0.11.apk"
-"$BT/aapt2" dump badging "$ROOT/MotoFlasher-2.0.11.apk" | head -4
-ls -la "$ROOT/MotoFlasher-2.0.11.apk"
-sha256sum "$ROOT/MotoFlasher-2.0.11.apk"
+"$BT/apksigner" verify --print-certs "$ROOT/MotoFlasher-2.0.12.apk"
+"$BT/aapt2" dump badging "$ROOT/MotoFlasher-2.0.12.apk" | head -4
+ls -la "$ROOT/MotoFlasher-2.0.12.apk"
+sha256sum "$ROOT/MotoFlasher-2.0.12.apk"

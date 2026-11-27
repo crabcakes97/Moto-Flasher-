@@ -47,6 +47,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import com.cronch.motoflasher.Fastboot
+import com.cronch.motoflasher.setLed
 import com.cronch.motoflasher.UiStyle
 import java.io.File
 
@@ -149,7 +150,7 @@ class BromUi(
             root, "Connection",
             "Pick DA + auth. No checks here. The handshake is the check.",
         )
-        connText = UiStyle.status(activity, "No DA / auth picked yet.")
+        connText = UiStyle.ledStatus(activity, "No DA / auth picked yet.")
         card.addView(connText)
         card.addView(UiStyle.actionButton(activity, "Pick DA file") { pickDocument(REQ_BROM_DA) })
         card.addView(UiStyle.actionButton(activity, "Pick auth file") { pickDocument(REQ_BROM_AUTH) })
@@ -159,7 +160,7 @@ class BromUi(
             root, "BROM device",
             "Plug the target in. Shows as preloader first. " + statusLine("detect", "shows VID/PID"),
         )
-        bromText = UiStyle.status(activity, "No BROM device detected yet.")
+        bromText = UiStyle.ledStatus(activity, "No BROM device detected yet.")
         card.addView(bromText)
         card.addView(UiStyle.ghostButton(activity, "Detect BROM device") { detectDevice() })
 
@@ -326,6 +327,7 @@ class BromUi(
             "Auth: ${authFile!!.name} (${authFile!!.length()} bytes, sha256=$authSha)"
         } else "Auth: not picked"
         connText.text = "$daLine\n$authLine"
+        connText.setLed(if (daFile != null && authFile != null) UiStyle.Status.OK else UiStyle.Status.INFO)
         blog("BROM connection:\n$daLine\n$authLine")
     }
 
@@ -404,10 +406,12 @@ class BromUi(
             activity.runOnUiThread {
                 if (first == null) {
                     bromText.text = "No BROM / preloader device found. Plug the target in — it shows up as preloader first, no buttons needed. Tap Connect and it grabs the preloader the moment it appears."
+                    bromText.setLed(UiStyle.Status.FAIL)
                     Toast.makeText(activity, "No BROM device found", Toast.LENGTH_SHORT).show()
                 } else {
                     val vidPid = "VID %04X PID %04X".format(first.first, first.second)
                     bromText.text = "Found: $vidPid (${if (first.second == Penumbra.BROM_PID) "BROM" else "preloader VCOM"}) — chip: not identified until connect."
+                    bromText.setLed(UiStyle.Status.OK)
                 }
             }
             if (first == null) {
@@ -445,6 +449,7 @@ class BromUi(
         blog("BROM connect [${statusOf("handshake")}]: waiting for a preloader / BROM device (up to 60 s, up to 3 connect cycles) — plug the target in now…")
         activity.runOnUiThread {
             bromText.text = "Waiting for a preloader / BROM device. Plug the target in…"
+            bromText.setLed(UiStyle.Status.WAIT)
         }
         revealLogFn()
         Thread {
@@ -468,6 +473,7 @@ class BromUi(
                     if (!foundDevice) break
                     activity.runOnUiThread {
                         bromText.text = "Preloader / BROM device seen. Running Antumbra connect (cycle $cycle/3)…"
+                        bromText.setLed(UiStyle.Status.WAIT)
                     }
                     val s = PenumbraSession(activity, da, auth)
                     session = s
@@ -485,6 +491,7 @@ class BromUi(
                     blog("BROM connected. ${probe.text()}")
                     activity.runOnUiThread {
                         bromText.text = "Connected — ${probe.text()}"
+                        bromText.setLed(UiStyle.Status.OK)
                     }
                     blog("BROM connected. Next: Check GPT (optional) — or run a read/write/blankflash directly.")
                     connected = true
@@ -493,6 +500,7 @@ class BromUi(
                     blog("BROM FAILED: connect did not complete in 3 cycles / 60 s — plug the target in and tap Connect again.")
                     activity.runOnUiThread {
                         bromText.text = "Connect failed — no preloader / BROM device found in 60 s (see log)."
+                        bromText.setLed(UiStyle.Status.FAIL)
                         Toast.makeText(activity, "Connect failed — see log", Toast.LENGTH_LONG).show()
                     }
                 }

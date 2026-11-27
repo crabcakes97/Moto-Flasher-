@@ -140,5 +140,11 @@ Excluded: `motoflasher.keystore` (build script generates a fresh one if
 missing — note: a fresh keystore means a different signing cert),
 `build/` intermediates, all APK outputs + `.idsig` files, `preview/`.
 
-- Size: (filled in after packaging — see below)
-- SHA-256: (filled in after packaging — see below)
+- Size: 62,586,034 bytes (3,428 files, 159,472,937 bytes uncompressed)
+- SHA-256: `532bad86d748062053374d336d341715ad1e35d1c58d383af9dd430540e74913`
+- Top level: `AndroidManifest.xml`, `BUILD_2.0.0.md` … `BUILD_2.0.11.md`,
+  `CREDITS.md`, `LICENSE.penumbra`, `LK_EXTRACTION_2.0.8.md`, `SPEC.md`,
+  `assets/`, `build_motoflasher.sh`, `res/`, `src/`, `toolchain/`.
+- Verified: no keystore, no APKs in the zip. (The copy of this note
+  inside the zip predates these two lines — a file can't contain its
+  own zip's hash.)

@@ -40,6 +40,17 @@ import java.io.File
  * bus listing, then runs `devices -l` raw. If the list comes back
  * empty it retries ONCE (kill-server, start-server, devices -l) and
  * logs both attempts. Diagnose dumps all of it in one shot.
+ *
+ * 2.0.12 — on 2.0.11 the daemon still came up (exit 0) with an EMPTY
+ * device list after the retry, while fastboot/BROM over the same OTG
+ * link worked. Diagnose now also dumps the kernel's view: every
+ * /sys/bus/usb/devices entry (VID/PID/manufacturer/product/serial),
+ * each interface's class/subclass/protocol + bound driver (an adb
+ * interface is ff/42/01 — this shows whether one exists at all and
+ * whether a kernel driver grabbed it), a 5s foreground
+ * `adb server nodaemon` probe (the daemon's own USB attach messages,
+ * verbatim), the host's sys.usb.config/sys.usb.state, and a dmesg
+ * usb tail. Diagnosis only — the Devices flow is unchanged.
  */
 object Adb {
 
@@ -220,15 +231,111 @@ object Adb {
     }
 
     /**
+     * 2.0.12: run the adb server in the FOREGROUND for 5 seconds and
+     * log everything it prints — its own USB enumeration/attach
+     * messages, which a daemonized server swallows. Uses `timeout 5`
+     * when the su shell has it; otherwise background + sleep + kill.
+     * Caller must kill-server first (port 5037 must be free) and
+     * kill-server again after, then restart normally.
+     */
+    fun daemonForegroundProbe(ctx: Context, onLine: (String) -> Unit) {
+        onLine("--- adb server nodaemon probe (5s foreground) ---")
+        val bin = binFile(ctx)
+        val lib = libDir(ctx)
+        val home = homeDir(ctx)
+        val env = "HOME='${home.absolutePath}' ANDROID_USER_HOME='${home.absolutePath}' " +
+            "LD_LIBRARY_PATH='${lib.absolutePath}'"
+        val S = "${'$'}"
+        Fastboot.runSu(
+            "if command -v timeout >/dev/null 2>&1; then " +
+                "echo '(probe via timeout 5)'; " +
+                "$env timeout 5 '${bin.absolutePath}' server nodaemon 2>&1; " +
+                "echo \"probe exit: ${S}?\"; " +
+                "else " +
+                "echo '(no timeout cmd — background + sleep 5 + kill)'; " +
+                "$env '${bin.absolutePath}' server nodaemon 2>&1 & PROBE_PID=${S}!; " +
+                "sleep 5; kill ${S}PROBE_PID 2>/dev/null; wait ${S}PROBE_PID 2>/dev/null; " +
+                "echo \"probe exit: ${S}?\"; " +
+                "fi",
+            { onLine(it) },
+        )
+        onLine("--- end nodaemon probe ---")
+    }
+
+    /**
+     * 2.0.12: the kernel's view of USB, verbatim from the root shell.
+     * Every /sys/bus/usb/devices entry with idVendor/idProduct/
+     * manufacturer/product/serial (root hubs marked), each interface's
+     * class/subclass/protocol + bound driver — an adb interface is
+     * ff/42/01, so this shows whether one exists at all and whether a
+     * kernel driver grabbed it — then the host's sys.usb.config /
+     * sys.usb.state and a dmesg usb tail (empty/restricted is logged
+     * plainly by the dmesg readability check).
+     */
+    fun usbKernelDump(onLine: (String) -> Unit) {
+        val S = "${'$'}"
+        // 2.0.12 (from Kyle's 2.0.11 log: /dev/bus/usb missing in the
+        // root shell while fastboot saw the phone): is usbfs mounted,
+        // does sysfs see devices anyway, and is the su shell in a
+        // private mount namespace hiding the nodes?
+        onLine("--- USB fs + namespace check (root shell) ---")
+        Fastboot.runSu(
+            "echo 'ls -la /dev/bus/:'; ls -la /dev/bus/ 2>&1; " +
+                "echo 'mount | grep -i usb:'; mount 2>&1 | grep -i usb || echo '(no usb mount found)'; " +
+                "echo 'ls /sys/bus/usb/devices/:'; ls /sys/bus/usb/devices/ 2>&1; " +
+                "echo \"su shell mnt ns: ${S}(readlink /proc/self/ns/mnt 2>&1)\"; " +
+                "echo \"init mnt ns: ${S}(readlink /proc/1/ns/mnt 2>&1)\"",
+            { onLine(it) },
+        )
+        onLine("--- USB kernel dump (sysfs, root shell) ---")
+        Fastboot.runSu(
+            "echo 'devices in /sys/bus/usb/devices:'; ls /sys/bus/usb/devices/ 2>&1; " +
+                "for ${S}d in /sys/bus/usb/devices/*; do " +
+                "echo \"== ${S}d ==\"; " +
+                "case \"${S}d\" in */usb[0-9]*) echo '(root hub)';; esac; " +
+                "for ${S}f in idVendor idProduct manufacturer product serial; do " +
+                "if [ -r \"${S}d/${S}f\" ]; then echo \"${S}f: ${S}(cat ${S}d/${S}f 2>&1)\"; " +
+                "else echo \"${S}f: (unreadable)\"; fi; " +
+                "done; " +
+                "for ${S}i in ${S}d:*; do " +
+                "[ -d \"${S}i\" ] || continue; " +
+                "echo \"-- interface ${S}i --\"; " +
+                "for ${S}f in bInterfaceClass bInterfaceSubClass bInterfaceProtocol; do " +
+                "echo \"${S}f: ${S}(cat ${S}i/${S}f 2>&1)\"; " +
+                "done; " +
+                "echo \"driver: ${S}(readlink ${S}i/driver 2>&1)\"; " +
+                "done; " +
+                "done",
+            { onLine(it) },
+        )
+        onLine("--- host USB mode (getprop) ---")
+        Fastboot.runSu(
+            "echo \"sys.usb.config: ${S}(getprop sys.usb.config 2>&1)\"; " +
+                "echo \"sys.usb.state: ${S}(getprop sys.usb.state 2>&1)\"",
+            { onLine(it) },
+        )
+        onLine("--- dmesg usb tail ---")
+        Fastboot.runSu(
+            "dmesg 2>&1 | grep -i usb | tail -n 60; " +
+                "echo '(end dmesg usb lines — empty above = no usb lines in dmesg, or dmesg restricted)'; " +
+                "echo 'dmesg last 3 lines (readable check):'; dmesg 2>&1 | tail -n 3",
+            { onLine(it) },
+        )
+        onLine("--- end USB kernel dump ---")
+    }
+
+    /**
      * Full ADB diagnosis in one shot, everything logged verbatim:
      * binary path + version, libs present, HOME path + writable?,
-     * kill + fresh start-server, daemon pid + port 5037 owner, USB bus
-     * listing, then a fresh-server devices run (with the one retry).
+     * kill + 5s foreground nodaemon probe + fresh start-server,
+     * daemon pid + port 5037 owner, USB bus listing, kernel sysfs USB
+     * dump (devices, interfaces, drivers), host sys.usb props, dmesg
+     * usb tail, then a fresh-server devices run (with the one retry).
      * Call this when Devices shows an empty list. The whole dump is in
      * the More-tab log, copyable as usual.
      */
     fun diagnose(ctx: Context, onLine: (String) -> Unit): String {
-        onLine("=== ADB diagnose (2.0.11 full dump) ===")
+        onLine("=== ADB diagnose (2.0.12 full dump) ===")
         val bin = binFile(ctx)
         onLine("adb binary: ${bin.absolutePath}")
         onLine("adb binary exists=${bin.exists()} size=${if (bin.exists()) bin.length() else -1} executable=${bin.canExecute()}")
@@ -243,11 +350,17 @@ object Adb {
         val version = run(ctx, listOf("version"), onLine)
         onLine("adb version: exit ${version.exitCode}")
         val killed = killServer(ctx, onLine)
-        onLine("kill-server: exit ${killed.exitCode} — starting a fresh one…")
+        onLine("kill-server: exit ${killed.exitCode} — foreground probe next…")
+        // 2.0.12: foreground probe with port 5037 free, then kill
+        // whatever it left and restart normally.
+        daemonForegroundProbe(ctx, onLine)
+        val killedAfterProbe = killServer(ctx, onLine)
+        onLine("kill-server after probe: exit ${killedAfterProbe.exitCode} — starting a fresh one…")
         val started = startServer(ctx, onLine)
         onLine("start-server: exit ${started.exitCode}")
         daemonCheck(onLine)
         usbVisibility(ctx, onLine)
+        usbKernelDump(onLine)
         val devices = devicesFresh(ctx, onLine)
         val found = hasDevice(devices.output)
         val summary = if (found) {
