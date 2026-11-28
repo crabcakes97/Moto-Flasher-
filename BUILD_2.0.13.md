@@ -214,3 +214,9 @@ cert), all APKs + .idsig files, `build/`, `preview/`.
 (The copy of this note inside the zip predates the zip's own
 size/SHA lines appended below — a file can't contain its own zip's
 hash.)
+
+- `MotoFlasher-2.0.13-source.zip` — 54,731,262 bytes, 3016 files
+- SHA-256: `f18a2b2987715e296eded950a99ebdf9a1c831fd122ead51fa9e6fd426422b7d`
+- Verified: no keystore, no APKs, no build/ or preview/ in the zip.
+  Four broken doc symlinks under toolchain/*-extract-*/ (copyright
+  files) were skipped — they are not needed to rebuild.

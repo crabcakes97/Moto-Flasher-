@@ -106,6 +106,14 @@ object UiStyle {
     var INPUT_BG: Int = 0xFF160C28.toInt()
     var INPUT_HINT: Int = 0xFF9A86C2.toInt()
 
+    // 2.0.14: master animation switch (Settings, persisted). OFF
+    // disables every animation: the progress strip still shows as a
+    // static fill, LEDs stay solid, no pulses / shimmers / entrances /
+    // press dips / fades. MainActivity sets this from prefs at
+    // startup and on toggle; every animation helper below checks it
+    // at call time so the toggle applies immediately.
+    var animationsEnabled: Boolean = true
+
     /** Themes. "neon" is the default — the 2.0.11 phonk/cyberpunk look. */
     val THEMES = listOf("neon", "ember", "frost")
 
@@ -297,6 +305,21 @@ object UiStyle {
                 invalidateSelf()
             }
 
+        /** 2.0.14: shimmer position along the top edge while an
+         *  operation runs (0..1, accent segment sweeping left to
+         *  right). Negative = no shimmer. MainActivity drives it. */
+        var shimmerPhase: Float = -1f
+            set(v) {
+                field = v
+                invalidateSelf()
+            }
+
+        private val shimmerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = borderPx * 2f
+            strokeCap = Paint.Cap.ROUND
+        }
+
         override fun draw(canvas: Canvas) {
             val b = bounds
             val r = RectF(
@@ -306,6 +329,22 @@ object UiStyle {
             canvas.drawRoundRect(r, radiusPx, radiusPx, fillPaint)
             canvas.drawRoundRect(r, radiusPx, radiusPx, borderPaint)
             canvas.drawLine(r.left + radiusPx, r.top + borderPx, r.right - radiusPx, r.top + borderPx, hlPaint)
+            if (shimmerPhase >= 0f) {
+                // Accent segment (25% of the top edge) travelling
+                // left to right, clipped to the highlight span.
+                val x0 = r.left + radiusPx
+                val x1 = r.right - radiusPx
+                val len = x1 - x0
+                if (len > 0f) {
+                    val seg = len * 0.25f
+                    val sx = x0 - seg + (len + seg) * shimmerPhase
+                    shimmerPaint.color = MAGENTA
+                    canvas.save()
+                    canvas.clipRect(x0, r.top, x1, r.top + borderPx * 3f)
+                    canvas.drawLine(sx, r.top + borderPx, sx + seg, r.top + borderPx, shimmerPaint)
+                    canvas.restore()
+                }
+            }
         }
 
         override fun setAlpha(alpha: Int) {
@@ -452,11 +491,15 @@ object UiStyle {
      *  pressed-state background already inverts to the accent fill. */
     fun addPressFeedback(v: View) {
         v.setOnTouchListener { view, ev ->
-            when (ev.actionMasked) {
-                MotionEvent.ACTION_DOWN ->
-                    view.animate().scaleX(0.97f).scaleY(0.97f).setDuration(120).start()
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
-                    view.animate().scaleX(1f).scaleY(1f).setDuration(120).start()
+            // 2.0.14: the flag is checked per touch so the Settings
+            // toggle applies to already-built buttons immediately.
+            if (animationsEnabled) {
+                when (ev.actionMasked) {
+                    MotionEvent.ACTION_DOWN ->
+                        view.animate().scaleX(0.97f).scaleY(0.97f).setDuration(120).start()
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
+                        view.animate().scaleX(1f).scaleY(1f).setDuration(120).start()
+                }
             }
             false
         }
@@ -873,6 +916,9 @@ object UiStyle {
     fun styledDialog(
         ctx: Context, title: String, message: String,
         positiveLabel: String, negativeLabel: String, onYes: () -> Unit,
+        // 2.0.14: optional cancel callback (negative button or any
+        // other dismissal) — background-thread confirms block on it.
+        onNo: () -> Unit = {},
     ) {
         val dialog = AlertDialog.Builder(ctx).create()
         val body = LinearLayout(ctx).apply {
@@ -900,10 +946,21 @@ object UiStyle {
             setPadding(0, 0, 0, ctx.dp(16))
         })
         val row = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL }
-        row.addView(rowGhostButton(ctx, negativeLabel) { dialog.dismiss() })
-        row.addView(rowActionButton(ctx, positiveLabel) { dialog.dismiss(); onYes() })
+        var answered = false
+        row.addView(rowGhostButton(ctx, negativeLabel) {
+            answered = true
+            dialog.dismiss()
+            onNo()
+        })
+        row.addView(rowActionButton(ctx, positiveLabel) {
+            answered = true
+            dialog.dismiss()
+            onYes()
+        })
         body.addView(row)
         dialog.setView(body)
+        // Dismissal by back button / outside tap counts as "no".
+        dialog.setOnDismissListener { if (!answered) onNo() }
         dialog.show()
         dialog.window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
     }
@@ -938,7 +995,14 @@ object UiStyle {
         fun showIndeterminate() {
             fraction = -1f
             visibility = VISIBLE
-            startSweep()
+            // 2.0.14: animations OFF — the strip still shows, as a
+            // static segment parked mid-track (no sweep animator).
+            if (animationsEnabled) {
+                startSweep()
+            } else {
+                stopSweep()
+                sweep = 0.35f
+            }
             invalidate()
         }
 
@@ -1018,6 +1082,12 @@ object UiStyle {
             strokePaint.color = color
             strokePaint.alpha = 255
             visibility = VISIBLE
+            // 2.0.14: animations OFF — solid border for ~600ms, no fade.
+            if (!animationsEnabled) {
+                postDelayed({ visibility = INVISIBLE }, 600)
+                invalidate()
+                return
+            }
             animator = ValueAnimator.ofInt(255, 0).apply {
                 duration = 600
                 addUpdateListener {
@@ -1054,6 +1124,8 @@ object UiStyle {
     /** Gentle repeating LED pulse (alpha 90..255, 700ms each way). */
     fun startLedPulse(tv: TextView) {
         stopLedPulse(tv)
+        // 2.0.14: animations OFF — LED stays solid.
+        if (!animationsEnabled) return
         val led = tv.compoundDrawables[0] as? GradientDrawable ?: return
         val a = ValueAnimator.ofInt(90, 255).apply {
             duration = 700
@@ -1072,6 +1144,8 @@ object UiStyle {
      *  a device connects. */
     fun pulseLedOnce(tv: TextView) {
         stopLedPulse(tv)
+        // 2.0.14: animations OFF — LED stays solid.
+        if (!animationsEnabled) return
         val led = tv.compoundDrawables[0] as? GradientDrawable ?: return
         val a = ValueAnimator.ofInt(90, 255).apply {
             duration = 260
@@ -1103,6 +1177,8 @@ object UiStyle {
      *  colour and eases back over ~900ms. No-op when the card's
      *  background is not a PanelDrawable. */
     fun glowCardBorder(card: View) {
+        // 2.0.14: animations OFF — no glow.
+        if (!animationsEnabled) return
         val panel = card.background as? PanelDrawable ?: return
         val from = MAGENTA
         val to = CARD_STROKE
@@ -1115,16 +1191,24 @@ object UiStyle {
 
     enum class ChipState { PENDING, ACTIVE, DONE }
 
-    /** Small chamfered step chip for the Val flow readout. */
+    /** Small chamfered step chip for the Val flow readout.
+     *  2.0.14: all six chips are IDENTICAL size — fixed height,
+     *  single-line labels, tighter side padding and 10sp text so
+     *  "ANALYZE" fits on one line at ~360dp total width (it used to
+     *  wrap to "ANALYZ / E" and make its chip taller than the rest).
+     *  Equal weight in the row keeps the widths identical too. */
     fun stepChip(ctx: Context, label: String): TextView = TextView(ctx).apply {
         text = label
         isAllCaps = true
         letterSpacing = 0.05f
-        textSize = 11f
+        textSize = 10f
         gravity = Gravity.CENTER
+        maxLines = 1
+        setSingleLine(true)
+        includeFontPadding = false
         applyHeadingFont(this)
-        setPadding(ctx.dp(6), ctx.dp(6), ctx.dp(6), ctx.dp(6))
-        layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+        setPadding(ctx.dp(2), ctx.dp(4), ctx.dp(2), ctx.dp(4))
+        layoutParams = LinearLayout.LayoutParams(0, ctx.dp(28), 1f).apply {
             leftMargin = ctx.dp(2)
             rightMargin = ctx.dp(2)
             topMargin = ctx.dp(4)
@@ -1133,32 +1217,209 @@ object UiStyle {
         setChipState(this, ChipState.PENDING)
     }
 
+    // Chip fade animators (2.0.14), one per chip, always cancellable.
+    private val chipAnimators = mutableMapOf<TextView, ValueAnimator>()
+
+    /** (fill, border, text) colours for a chip state. */
+    private fun chipColors(state: ChipState): Triple<Int, Int, Int> = when (state) {
+        ChipState.PENDING -> Triple(blend(CARD, Color.BLACK, 0.25f), PURPLE, TEXT_DIM)
+        ChipState.ACTIVE -> Triple(blend(MAGENTA, Color.BLACK, 0.78f), MAGENTA, TEXT)
+        ChipState.DONE -> Triple(MAGENTA, MAGENTA, ON_ACCENT)
+    }
+
     /** Chip colours by state: pending = dim on dark, active = accent
-     *  border + bright text, done = solid accent with dark text. */
+     *  border + bright text, done = solid accent with dark text.
+     *  2.0.14: a step completing (→ DONE) fades from its previous
+     *  colours to solid over ~250ms instead of snapping (skipped
+     *  when animations are off). */
     fun setChipState(chip: TextView, state: ChipState) {
         val ctx = chip.context
         val borderPx = 1.5f * ctx.resources.displayMetrics.density
         val chamferPx = ctx.dp(5).toFloat()
-        when (state) {
-            ChipState.PENDING -> {
-                chip.background = ChamferDrawable(
-                    blend(CARD, Color.BLACK, 0.25f), PURPLE, borderPx, chamferPx,
-                )
-                chip.setTextColor(TEXT_DIM)
+        val prev = chip.tag as? ChipState
+        chip.tag = state
+        chipAnimators.remove(chip)?.cancel()
+        val (fill, border, textColor) = chipColors(state)
+        if (state == ChipState.DONE && prev != null && prev != ChipState.DONE && animationsEnabled) {
+            val (pFill, pBorder, pText) = chipColors(prev)
+            val eval = ArgbEvaluator()
+            val a = ValueAnimator.ofFloat(0f, 1f).apply {
+                duration = 250
+                addUpdateListener {
+                    val f = it.animatedValue as Float
+                    chip.background = ChamferDrawable(
+                        eval.evaluate(f, pFill, fill) as Int,
+                        eval.evaluate(f, pBorder, border) as Int,
+                        borderPx, chamferPx,
+                    )
+                    chip.setTextColor(eval.evaluate(f, pText, textColor) as Int)
+                }
+                addListener(object : android.animation.AnimatorListenerAdapter() {
+                    override fun onAnimationEnd(anim: android.animation.Animator) {
+                        chipAnimators.remove(chip)
+                    }
+                })
             }
-            ChipState.ACTIVE -> {
-                chip.background = ChamferDrawable(
-                    blend(MAGENTA, Color.BLACK, 0.78f), MAGENTA, borderPx, chamferPx,
-                )
-                chip.setTextColor(TEXT)
-            }
-            ChipState.DONE -> {
-                chip.background = ChamferDrawable(
-                    MAGENTA, MAGENTA, borderPx, chamferPx,
-                )
-                chip.setTextColor(ON_ACCENT)
+            chipAnimators[chip] = a
+            a.start()
+        } else {
+            chip.background = ChamferDrawable(fill, border, borderPx, chamferPx)
+            chip.setTextColor(textColor)
+        }
+    }
+
+    /** Cancel every chip fade (activity teardown). */
+    fun cancelChipFades() {
+        chipAnimators.values.forEach { it.cancel() }
+        chipAnimators.clear()
+    }
+
+    /**
+     * 2.0.14: small Canvas-drawn verdict mark — a check on success,
+     *  an X on failure — stroked in over ~300ms next to the Home
+     *  status line. clear() hides it. With animations off the mark
+     *  is drawn complete at once (it is a status signal, not motion).
+     */
+    class CheckMarkView(ctx: Context) : View(ctx) {
+        private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = ctx.dp(3).toFloat()
+            strokeCap = Paint.Cap.ROUND
+            strokeJoin = Paint.Join.ROUND
+        }
+        private var success = true
+        private var progress = 0f
+        private var animator: ValueAnimator? = null
+
+        init {
+            visibility = INVISIBLE
+            layoutParams = LinearLayout.LayoutParams(ctx.dp(24), ctx.dp(24)).apply {
+                leftMargin = ctx.dp(8)
             }
         }
+
+        fun show(ok: Boolean) {
+            success = ok
+            strokePaint.color = if (ok) GREEN else RED
+            visibility = VISIBLE
+            animator?.cancel()
+            if (!animationsEnabled) {
+                progress = 1f
+                invalidate()
+                return
+            }
+            progress = 0f
+            animator = ValueAnimator.ofFloat(0f, 1f).apply {
+                duration = 300
+                addUpdateListener {
+                    progress = it.animatedValue as Float
+                    invalidate()
+                }
+                start()
+            }
+        }
+
+        fun clear() {
+            animator?.cancel()
+            animator = null
+            progress = 0f
+            visibility = INVISIBLE
+        }
+
+        override fun onDetachedFromWindow() {
+            animator?.cancel()
+            animator = null
+            super.onDetachedFromWindow()
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            if (visibility != VISIBLE || progress <= 0f) return
+            val w = width.toFloat()
+            val h = height.toFloat()
+            if (w <= 0f || h <= 0f) return
+            if (success) {
+                // Check: short stroke down-right, then long up-right.
+                val ax = w * 0.12f; val ay = h * 0.55f
+                val bx = w * 0.40f; val by = h * 0.82f
+                val cx = w * 0.88f; val cy = h * 0.18f
+                if (progress <= 0.4f) {
+                    val f = progress / 0.4f
+                    canvas.drawLine(ax, ay, ax + (bx - ax) * f, ay + (by - ay) * f, strokePaint)
+                } else {
+                    canvas.drawLine(ax, ay, bx, by, strokePaint)
+                    val f = (progress - 0.4f) / 0.6f
+                    canvas.drawLine(bx, by, bx + (cx - bx) * f, by + (cy - by) * f, strokePaint)
+                }
+            } else {
+                // X: two diagonals, half the time each.
+                val x0 = w * 0.18f; val x1 = w * 0.82f
+                val y0 = h * 0.18f; val y1 = h * 0.82f
+                if (progress <= 0.5f) {
+                    val f = progress / 0.5f
+                    canvas.drawLine(x0, y0, x0 + (x1 - x0) * f, y0 + (y1 - y0) * f, strokePaint)
+                } else {
+                    canvas.drawLine(x0, y0, x1, y1, strokePaint)
+                    val f = (progress - 0.5f) / 0.5f
+                    canvas.drawLine(x1, y0, x1 - (x1 - x0) * f, y0 + (y1 - y0) * f, strokePaint)
+                }
+            }
+        }
+    }
+
+    /** 2.0.14: Settings toggle block — a small chamfered ON/OFF
+     *  block (solid accent + dark text when on, dim when off).
+     *  MainActivity composes the rows and handles the taps. */
+    fun toggleBlock(ctx: Context, on: Boolean): TextView = TextView(ctx).apply {
+        gravity = Gravity.CENTER
+        isAllCaps = true
+        letterSpacing = 0.06f
+        textSize = 13f
+        applyHeadingFont(this)
+        setPadding(ctx.dp(14), ctx.dp(6), ctx.dp(14), ctx.dp(6))
+        layoutParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT,
+        )
+        setToggleBlock(this, on)
+    }
+
+    fun setToggleBlock(block: TextView, on: Boolean) {
+        val ctx = block.context
+        val borderPx = 1.5f * ctx.resources.displayMetrics.density
+        block.text = if (on) "On" else "Off"
+        block.background = if (on) {
+            ChamferDrawable(MAGENTA, MAGENTA, borderPx, ctx.dp(5).toFloat())
+        } else {
+            ChamferDrawable(blend(CARD, Color.BLACK, 0.25f), PURPLE, borderPx, ctx.dp(5).toFloat())
+        }
+        block.setTextColor(if (on) ON_ACCENT else TEXT_DIM)
+    }
+
+    /** 2.0.14: Settings choice block (e.g. S / M / L) — same block
+     *  language as the toggle; the picked one is solid. */
+    fun choiceBlock(ctx: Context, label: String, picked: Boolean): TextView = TextView(ctx).apply {
+        text = label
+        gravity = Gravity.CENTER
+        isAllCaps = true
+        letterSpacing = 0.06f
+        textSize = 13f
+        applyHeadingFont(this)
+        setPadding(ctx.dp(14), ctx.dp(6), ctx.dp(14), ctx.dp(6))
+        layoutParams = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT,
+        ).apply { leftMargin = ctx.dp(6) }
+        setChoiceBlock(this, picked)
+    }
+
+    fun setChoiceBlock(block: TextView, picked: Boolean) {
+        val ctx = block.context
+        val borderPx = 1.5f * ctx.resources.displayMetrics.density
+        block.background = if (picked) {
+            ChamferDrawable(MAGENTA, MAGENTA, borderPx, ctx.dp(5).toFloat())
+        } else {
+            ChamferDrawable(blend(CARD, Color.BLACK, 0.25f), PURPLE, borderPx, ctx.dp(5).toFloat())
+        }
+        block.setTextColor(if (picked) ON_ACCENT else TEXT_DIM)
     }
 }
 
