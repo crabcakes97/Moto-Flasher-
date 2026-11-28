@@ -265,3 +265,7 @@ cert), all APKs + .idsig files, `build/`, `preview/`.
 (The copy of this note inside the zip predates the zip's own
 size/SHA lines appended below — a file can't contain its own zip's
 hash.)
+
+- `MotoFlasher-2.0.12-source.zip` — 62,602,583 bytes, 3430 files
+- SHA-256: `6af2f10bc1646696f4a719e95f662c73dd28517939977257a69547a395383a3c`
+- Verified: no keystore, no APKs, no build/ or preview/ in the zip.

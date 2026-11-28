@@ -104,6 +104,12 @@ class BromUi(
 
     @Volatile
     private var bromConnecting = false
+
+    /** 2.0.13: true while a connect is running or a BROM session is
+     *  open. The Home device watcher checks this so its fastboot
+     *  polls never fight a BROM operation for the USB device. */
+    fun isBusy(): Boolean = bromConnecting || session != null
+
     private fun blog(s: String) {
         bromLogFile.append(s)
         log(s)
@@ -119,16 +125,6 @@ class BromUi(
         }
     }
 
-    private fun statusOf(op: String): DocStatus = when (op) {
-        "printgpt", "read" -> DocStatus.UNTESTED
-        "gpt-write" -> DocStatus.UNTESTED
-        "crasher" -> DocStatus.UNSUPPORTED
-        else -> DocStatus.UNTESTED
-    }
-
-    private fun statusLine(op: String, note: String): String =
-        if (note.isEmpty()) "$op [${statusOf(op)}]" else "$op [${statusOf(op)}] — $note"
-
     private fun section(root: LinearLayout, title: String, body: String? = null): LinearLayout {
         val card = UiStyle.card(activity)
         card.addView(UiStyle.sectionTitle(activity, title))
@@ -141,16 +137,16 @@ class BromUi(
     fun addTo(root: LinearLayout) {
         var card = section(
             root, "BROM / Penumbra",
-            "Dead phone recovery over OTG. DA + auth only. GPT rewrite only runs inside a blankflash run, when checked.",
+            "Recovery for dead phones over OTG. Uses DA and auth files. The GPT is only rewritten inside a blankflash run, when checked.",
         )
         card.addView(UiStyle.bromButton(activity, "Test Antumbra") { testAntumbraBinary() })
-        card.addView(UiStyle.body(activity, "Run first. Must print 'antumbra 2.0.0'."))
+        card.addView(UiStyle.body(activity, "Run this first. It must print 'antumbra 2.0.0'."))
 
         card = section(
             root, "Connection",
-            "Pick DA + auth. No checks here. The handshake is the check.",
+            "Pick the DA and auth files. They are not checked here. The handshake is the check.",
         )
-        connText = UiStyle.ledStatus(activity, "No DA / auth picked yet.")
+        connText = UiStyle.ledStatus(activity, "No DA or auth file picked yet.")
         card.addView(connText)
         card.addView(UiStyle.actionButton(activity, "Pick DA file") { pickDocument(REQ_BROM_DA) })
         card.addView(UiStyle.actionButton(activity, "Pick auth file") { pickDocument(REQ_BROM_AUTH) })
@@ -158,7 +154,7 @@ class BromUi(
 
         card = section(
             root, "BROM device",
-            "Plug the target in. Shows as preloader first. " + statusLine("detect", "shows VID/PID"),
+            "Plug the target in. It shows up as a preloader first. Detect shows the VID and PID.",
         )
         bromText = UiStyle.ledStatus(activity, "No BROM device detected yet.")
         card.addView(bromText)
@@ -166,8 +162,7 @@ class BromUi(
 
         card = section(
             root, "Check GPT",
-            "Optional. Proves the DA is up. If it fails: wrong DA/auth, or bad GPT. " +
-                statusLine("pgpt", "untested"),
+            "Optional. Confirms the DA is running. If it fails, the DA or auth is wrong, or the GPT is damaged.",
         )
         gateText = UiStyle.status(activity, "Optional. Buttons always work.")
         card.addView(gateText)
@@ -175,8 +170,7 @@ class BromUi(
 
         card = section(
             root, "Device partitions",
-            "Table read from the phone. Check what you want. Read, write, or erase. " +
-                statusLine("pgpt", "untested"),
+            "The table is read from the phone. Check the partitions you want, then read, write, or erase.",
         )
         deviceGptText = UiStyle.status(activity, "No GPT read yet. Connect first.")
         card.addView(deviceGptText)
@@ -189,8 +183,7 @@ class BromUi(
 
         card = section(
             root, "BROM read",
-            "Reads by name. Files go to Download/MotoFlasher/pulls-brom/. " +
-                statusLine("read", "untested"),
+            "Reads by name. Files go to Download/MotoFlasher/pulls-brom/.",
         )
         readPartInput = UiStyle.input(activity, "partition to read")
         card.addView(readPartInput)
@@ -200,8 +193,7 @@ class BromUi(
 
         card = section(
             root, "BROM write",
-            "Pick partition + file. Confirm. One at a time. Stops on failure. " +
-                statusLine("write", "read-back verified"),
+            "Pick a partition and a file, then confirm. Writes one partition at a time and stops on failure. Writes are verified by read-back.",
         )
         writePartInput = UiStyle.input(activity, "partition to write")
         card.addView(writePartInput)
@@ -212,7 +204,7 @@ class BromUi(
 
         card = section(
             root, "Raw flash",
-            "By address, hex or decimal. ro = bytes. rs = sector count. wo writes the file from BROM write. " + statusLine("raw", ""),
+            "Reads and writes by address (hex or decimal). ro reads bytes, rs reads sectors, wo writes the file picked in BROM write.",
         )
         rawAddrInput = UiStyle.input(activity, "address or start sector")
         card.addView(rawAddrInput)
@@ -224,8 +216,7 @@ class BromUi(
 
         card = section(
             root, "Blankflash",
-            "Pick a package folder. All 11 checked by default. Write GPT = highest risk, verified by read-back. Ends in fastboot. " +
-                statusLine("blankflash", "read-back verified"),
+            "Pick a blankflash package folder. All 11 partitions are checked by default. Writing the GPT is the highest-risk step and is verified by read-back. The phone reboots into fastboot at the end.",
         )
         blankText = UiStyle.status(activity, "No blankflash folder picked yet.")
         card.addView(blankText)
@@ -236,8 +227,7 @@ class BromUi(
 
         card = section(
             root, "BROM reset",
-            "Reboots into fastboot. " +
-                statusLine("reset", ""),
+            "Reboots into fastboot.",
         )
         card.addView(UiStyle.actionButton(activity, "Reset target") { resetTarget() })
     }
@@ -377,7 +367,7 @@ class BromUi(
             if (installErr != null) {
                 blog("Penumbra self-test FAILED: $installErr")
                 activity.runOnUiThread {
-                    Toast.makeText(activity, "Antumbra install FAILED — see log", Toast.LENGTH_LONG).show()
+                    Toast.makeText(activity, "Antumbra install failed — see log", Toast.LENGTH_LONG).show()
                 }
                 return@Thread
             }
@@ -391,7 +381,7 @@ class BromUi(
             } else {
                 blog("Penumbra self-test FAILED: --version exited ${r.exitCode} without the version string. The static binary does NOT execute on this phone — route (a) is dead, use 1.1.21 as the fallback and report this.")
                 activity.runOnUiThread {
-                    Toast.makeText(activity, "Antumbra does NOT run on this phone — see log", Toast.LENGTH_LONG).show()
+                    Toast.makeText(activity, "Antumbra does not run on this phone — see log", Toast.LENGTH_LONG).show()
                 }
             }
         }.start()
@@ -405,7 +395,7 @@ class BromUi(
             val first = found.firstOrNull()
             activity.runOnUiThread {
                 if (first == null) {
-                    bromText.text = "No BROM / preloader device found. Plug the target in — it shows up as preloader first, no buttons needed. Tap Connect and it grabs the preloader the moment it appears."
+                    bromText.text = "No BROM or preloader device found. Plug the target in. It shows up as a preloader first, with no buttons needed. Tap Connect and it grabs the preloader as soon as it appears."
                     bromText.setLed(UiStyle.Status.FAIL)
                     Toast.makeText(activity, "No BROM device found", Toast.LENGTH_SHORT).show()
                 } else {
@@ -446,7 +436,7 @@ class BromUi(
         val logPath = bromLogFile.startRun()
         if (logPath != null) blog("BROM log file: $logPath")
         blog("BROM log — ${appVersionStamp()} — engine: Antumbra ${Penumbra.VERSION} (Penumbra commit ${Penumbra.COMMIT})")
-        blog("BROM connect [${statusOf("handshake")}]: waiting for a preloader / BROM device (up to 60 s, up to 3 connect cycles) — plug the target in now…")
+        blog("BROM connect: waiting for a preloader / BROM device (up to 60 s, up to 3 connect cycles) — plug the target in now…")
         activity.runOnUiThread {
             bromText.text = "Waiting for a preloader / BROM device. Plug the target in…"
             bromText.setLed(UiStyle.Status.WAIT)
@@ -531,10 +521,10 @@ class BromUi(
     private fun checkGpt() {
         val s = session ?: run {
             toastFn("Connect first")
-            blog("BROM Check GPT [${statusOf("printgpt")}]: no session — connect first")
+            blog("BROM Check GPT: no session — connect first")
             return
         }
-        blog("BROM Check GPT [${statusOf("printgpt")}]: reading GPT via Antumbra pgpt…")
+        blog("BROM Check GPT: reading GPT via Antumbra pgpt…")
         Thread {
             try {
                 val r = s.readDevicePartitions { blog(it) }
@@ -544,12 +534,12 @@ class BromUi(
                             "Wrong DA/auth, or a damaged GPT (PC + SP Flash Tool only).",
                     )
                     activity.runOnUiThread {
-                        Toast.makeText(activity, "Check GPT FAILED — see log", Toast.LENGTH_LONG).show()
+                        Toast.makeText(activity, "Check GPT failed — see log", Toast.LENGTH_LONG).show()
                     }
                     return@Thread
                 }
                 val parts = s.gptPartitions()
-                blog("BROM Check GPT OK [${statusOf("printgpt")}]: ${r.text()} — ${parts.size} partitions in the table")
+                blog("BROM Check GPT OK: ${r.text()} — ${parts.size} partitions in the table")
                 for (p in parts) blog("  GPT: ${p.name} start=0x${p.startByte.toString(16)} size=${p.sizeBytes} bytes")
                 activity.runOnUiThread {
                     gateText.text = "Check GPT OK — GPT reads (${parts.size} partitions). Advisory only; writes were never gated on this."
@@ -598,9 +588,9 @@ class BromUi(
                         deviceCheckboxes.clear()
                         devicePartitions = listOf()
                     }
-                    blog("BROM device partitions FAILED: ${r.text()} — no list shown, the scatter list is never presented as the device's")
+                    blog("BROM device partitions FAILED: ${r.text()} — no list shown; the scatter list is not shown as the device list")
                     activity.runOnUiThread {
-                        Toast.makeText(activity, "Device GPT read FAILED — see log", Toast.LENGTH_LONG).show()
+                        Toast.makeText(activity, "Device GPT read failed — see log", Toast.LENGTH_LONG).show()
                     }
                     return@Thread
                 }
@@ -630,7 +620,7 @@ class BromUi(
     private fun readSelectedDevicePartitions() {
         val selected = selectedDevicePartitions()
         if (selected.isEmpty()) {
-            toastFn("Check a partition first")
+            toastFn("Select a partition first")
             return
         }
         val s = session ?: run {
@@ -649,20 +639,20 @@ class BromUi(
                     if (!r.isOk() || !tmp.exists() || tmp.length() == 0L) {
                         blog("BROM read selected FAILED at ${p.name}: ${r.text()} — stopping, no retry")
                         activity.runOnUiThread {
-                            Toast.makeText(activity, "Read FAILED at ${p.name} — see log", Toast.LENGTH_LONG).show()
+                            Toast.makeText(activity, "Read failed at ${p.name} — see log", Toast.LENGTH_LONG).show()
                         }
                         return@Thread
                     }
                     val sha = Fastboot.sha256(tmp)
                     val published = BromDownloads.publish(activity, tmp, "pulls-brom", "${p.name}.img") { blog(it) }
                     if (published == null) {
-                        blog("BROM read selected FAILED: ${p.name} was read but could NOT be published to Downloads — the private copy is at ${tmp.absolutePath}")
+                        blog("BROM read selected FAILED: ${p.name} was read but could not be published to Downloads — the private copy is at ${tmp.absolutePath}")
                         activity.runOnUiThread {
-                            Toast.makeText(activity, "Read OK but publish FAILED — see log", Toast.LENGTH_LONG).show()
+                            Toast.makeText(activity, "Read OK, but saving to Downloads failed — see log", Toast.LENGTH_LONG).show()
                         }
                         return@Thread
                     }
-                    blog("BROM read selected OK: ${p.name} -> ${published.absolutePath} (${published.length()} bytes, sha256=$sha)")
+                    blog("BROM read selected OK: ${p.name} saved to ${published.absolutePath} (${published.length()} bytes, sha256=$sha)")
                 }
                 activity.runOnUiThread {
                     Toast.makeText(activity, "Read ${selected.size} partition(s) to Downloads", Toast.LENGTH_SHORT).show()
@@ -678,7 +668,7 @@ class BromUi(
     private fun writeSelectedDevicePartitions() {
         val selected = selectedDevicePartitions()
         if (selected.isEmpty()) {
-            toastFn("Check a partition first")
+            toastFn("Select a partition first")
             return
         }
         val file = writeFile ?: run { toastFn("Pick a file first"); return }
@@ -687,11 +677,11 @@ class BromUi(
         }
         val brickHit = selected.any { it.name in BromConstants.BRICK_RISK_PARTITIONS }
         val brickNote = if (brickHit) {
-            "\n\nBRICK WARNING: bootloader-critical. Bad flash = brick until BROM recovery."
+            "\n\nWarning: this partition is bootloader-critical. A bad flash bricks the phone until BROM recovery."
         } else ""
         confirmFn(
             "Write ${selected.size} device partition(s)?",
-            "Operation: antumbra write <- ${writeFileName ?: file.name}\n" +
+            "Operation: antumbra write from ${writeFileName ?: file.name}\n" +
                 "File: ${file.length()} bytes, SHA-256: $writeFileSha\n$names$brickNote",
         ) {
             val s = session ?: run {
@@ -703,22 +693,22 @@ class BromUi(
                 acquireWakeFn()
                 try {
                     for (p in selected) {
-                        blog("BROM write selected [${statusOf("write")}]: ${p.name} <- ${file.name} (${file.length()} bytes)")
+                        blog("BROM write selected: ${p.name} from ${file.name} (${file.length()} bytes)")
                         val r = try {
                             val entry = scatterEntryFor(p.name)
                             if (entry != null) s.writeScatterEntry(entry, file) { blog(it) }
                             else s.writePartition(p.name, file) { blog(it) }
                         } catch (e: Exception) {
-                            blog("BROM write selected STOPPED LOUDLY: ${p.name} failed mid-write (${e.message}) — USB disconnect or DA error. No retry: a partial write must not be re-run blind.")
+                            blog("BROM write selected stopped: ${p.name} failed mid-write (${e.message}) — USB disconnect or DA error. No retry: a partial write must not be re-run blind.")
                             activity.runOnUiThread {
-                                Toast.makeText(activity, "Write STOPPED — see log, no retry", Toast.LENGTH_LONG).show()
+                                Toast.makeText(activity, "Write stopped — see log. No retry.", Toast.LENGTH_LONG).show()
                             }
                             return@Thread
                         }
                         if (!r.isOk()) {
-                            blog("BROM write selected FAILED: ${p.name}: ${r.text()} — STOP, no retry")
+                            blog("BROM write selected FAILED: ${p.name}: ${r.text()} — stopping, no retry")
                             activity.runOnUiThread {
-                                Toast.makeText(activity, "Write FAILED at ${p.name} — see log", Toast.LENGTH_LONG).show()
+                                Toast.makeText(activity, "Write failed at ${p.name} — see log", Toast.LENGTH_LONG).show()
                             }
                             return@Thread
                         }
@@ -737,7 +727,7 @@ class BromUi(
     private fun eraseSelectedDevicePartitions() {
         val selected = selectedDevicePartitions()
         if (selected.isEmpty()) {
-            toastFn("Check a partition first")
+            toastFn("Select a partition first")
             return
         }
         val names = selected.joinToString("\n") { p ->
@@ -745,7 +735,7 @@ class BromUi(
         }
         confirmFn(
             "Erase ${selected.size} device partition(s)?",
-            "$names\n\nERASES the partition. No backup. Data gone.",
+            "$names\n\nThis erases the partition. There is no backup. The data is gone.",
         ) {
             val s = session ?: run {
                 toastFn("No session. Connect first.")
@@ -760,16 +750,16 @@ class BromUi(
                         val r = try {
                             s.erasePartition(p.name) { blog(it) }
                         } catch (e: Exception) {
-                            blog("BROM erase selected STOPPED LOUDLY: ${p.name} failed mid-erase (${e.message}) — no retry.")
+                            blog("BROM erase selected stopped: ${p.name} failed mid-erase (${e.message}) — no retry.")
                             activity.runOnUiThread {
-                                Toast.makeText(activity, "Erase STOPPED — see log, no retry", Toast.LENGTH_LONG).show()
+                                Toast.makeText(activity, "Erase stopped — see log. No retry.", Toast.LENGTH_LONG).show()
                             }
                             return@Thread
                         }
                         if (!r.isOk()) {
-                            blog("BROM erase selected FAILED: ${p.name}: ${r.text()} — STOP, no retry")
+                            blog("BROM erase selected FAILED: ${p.name}: ${r.text()} — stopping, no retry")
                             activity.runOnUiThread {
-                                Toast.makeText(activity, "Erase FAILED at ${p.name} — see log", Toast.LENGTH_LONG).show()
+                                Toast.makeText(activity, "Erase failed at ${p.name} — see log", Toast.LENGTH_LONG).show()
                             }
                             return@Thread
                         }
@@ -804,14 +794,14 @@ class BromUi(
                 if (!r.isOk() || !tmp.exists() || tmp.length() == 0L) {
                     blog("BROM raw read FAILED: ${r.text()} — no file produced")
                     activity.runOnUiThread {
-                        Toast.makeText(activity, "Raw read FAILED — see log", Toast.LENGTH_LONG).show()
+                        Toast.makeText(activity, "Raw read failed — see log", Toast.LENGTH_LONG).show()
                     }
                     return@Thread
                 }
                 val sha = Fastboot.sha256(tmp)
                 val published = BromDownloads.publish(activity, tmp, "pulls-brom", "ro-0x${addr.toString(16)}.img") { blog(it) }
                 if (published == null) {
-                    blog("BROM raw read FAILED: read OK but could NOT be published to Downloads — the private copy is at ${tmp.absolutePath}")
+                    blog("BROM raw read FAILED: read OK but could not be published to Downloads — the private copy is at ${tmp.absolutePath}")
                     return@Thread
                 }
                 blog("BROM raw read published: ${published.absolutePath} (${published.length()} bytes, sha256=$sha)")
@@ -843,14 +833,14 @@ class BromUi(
                 if (!r.isOk() || !tmp.exists() || tmp.length() == 0L) {
                     blog("BROM sector read FAILED: ${r.text()} — no file produced")
                     activity.runOnUiThread {
-                        Toast.makeText(activity, "Sector read FAILED — see log", Toast.LENGTH_LONG).show()
+                        Toast.makeText(activity, "Sector read failed — see log", Toast.LENGTH_LONG).show()
                     }
                     return@Thread
                 }
                 val sha = Fastboot.sha256(tmp)
                 val published = BromDownloads.publish(activity, tmp, "pulls-brom", "rs-$sector.img") { blog(it) }
                 if (published == null) {
-                    blog("BROM sector read FAILED: read OK but could NOT be published to Downloads — the private copy is at ${tmp.absolutePath}")
+                    blog("BROM sector read FAILED: read OK but could not be published to Downloads — the private copy is at ${tmp.absolutePath}")
                     return@Thread
                 }
                 blog("BROM sector read published: ${published.absolutePath} (${published.length()} bytes, sha256=$sha)")
@@ -869,7 +859,7 @@ class BromUi(
         val file = writeFile ?: run { toastFn("Pick a file first"); return }
         confirmFn(
             "Write by offset (write-offset)?",
-            "Operation: antumbra write-offset 0x${addr.toString(16)} <- ${writeFileName ?: file.name}\n" +
+            "Operation: antumbra write-offset 0x${addr.toString(16)} from ${writeFileName ?: file.name}\n" +
                 "Size: ${file.length()} bytes\nSHA-256: $writeFileSha\n\n" +
                 "No partition name is checked here — this writes raw bytes " +
                 "at the address. Address 0 in the user area is refused " +
@@ -883,20 +873,20 @@ class BromUi(
             Thread {
                 acquireWakeFn()
                 try {
-                    blog("BROM raw write (write-offset): 0x${addr.toString(16)} <- ${file.name} (${file.length()} bytes)")
+                    blog("BROM raw write (write-offset): 0x${addr.toString(16)} from ${file.name} (${file.length()} bytes)")
                     val r = try {
                         s.writeRawOffset(addr, file) { blog(it) }
                     } catch (e: Exception) {
-                        blog("BROM raw write STOPPED LOUDLY: failed mid-write (${e.message}) — no retry.")
+                        blog("BROM raw write stopped: failed mid-write (${e.message}) — no retry.")
                         activity.runOnUiThread {
-                            Toast.makeText(activity, "Raw write STOPPED — see log, no retry", Toast.LENGTH_LONG).show()
+                            Toast.makeText(activity, "Raw write stopped — see log. No retry.", Toast.LENGTH_LONG).show()
                         }
                         return@Thread
                     }
                     if (!r.isOk()) {
-                        blog("BROM raw write FAILED: ${r.text()} — STOP, no retry")
+                        blog("BROM raw write FAILED: ${r.text()} — stopping, no retry")
                         activity.runOnUiThread {
-                            Toast.makeText(activity, "Raw write FAILED — see log", Toast.LENGTH_LONG).show()
+                            Toast.makeText(activity, "Raw write failed — see log", Toast.LENGTH_LONG).show()
                         }
                         return@Thread
                     }
@@ -919,7 +909,7 @@ class BromUi(
             toastFn("Connect first")
             return
         }
-        blog("BROM read [${statusOf("read")}]: $part to Download/MotoFlasher/pulls-brom/$part.img")
+        blog("BROM read: $part to Download/MotoFlasher/pulls-brom/$part.img")
         revealLogFn()
         Thread {
             try {
@@ -928,7 +918,7 @@ class BromUi(
                 if (!r.isOk() || !tmp.exists() || tmp.length() == 0L) {
                     blog("BROM read FAILED: $part: ${r.text()} — no file produced")
                     activity.runOnUiThread {
-                        Toast.makeText(activity, "Read FAILED — see log", Toast.LENGTH_LONG).show()
+                        Toast.makeText(activity, "Read failed — see log", Toast.LENGTH_LONG).show()
                     }
                     return@Thread
                 }
@@ -938,9 +928,9 @@ class BromUi(
                     activity, tmp, "pulls-brom", "$part.img",
                 ) { blog(it) }
                 if (published == null) {
-                    blog("BROM read FAILED: $part was read but could NOT be published to Downloads — the private copy is at ${tmp.absolutePath}")
+                    blog("BROM read FAILED: $part was read but could not be published to Downloads — the private copy is at ${tmp.absolutePath}")
                     activity.runOnUiThread {
-                        Toast.makeText(activity, "Read OK but publish FAILED — see log", Toast.LENGTH_LONG).show()
+                        Toast.makeText(activity, "Read OK, but saving to Downloads failed — see log", Toast.LENGTH_LONG).show()
                     }
                     return@Thread
                 }
@@ -962,10 +952,10 @@ class BromUi(
         val isBoot1 = part == "preloader"
         val isBrickRisk = part in BromConstants.BRICK_RISK_PARTITIONS
         val brickNote = if (isBrickRisk) {
-            "\n\nBRICK WARNING: $part is bootloader-critical. A bad flash here " +
-                "bricks the phone until BROM recovery — which is this very " +
-                "feature, with the DA + auth you picked above. Flash only a " +
-                "file built for THIS phone."
+            "\n\nWarning: $part is bootloader-critical. A bad flash here " +
+                "bricks the phone until BROM recovery, which is this " +
+                "feature, with the DA and auth you picked above. Flash only " +
+                "a file built for this phone."
         } else ""
         val boot1Note = if (isBoot1) "\nPreloader writes are routed by the DA to the BOOT1 hardware region." else ""
         val scatterEntry = scatterEntryFor(part)
@@ -975,10 +965,10 @@ class BromUi(
         } else ""
         confirmFn(
             "Write $part?",
-            "Operation: antumbra write $part <- ${writeFileName ?: file.name}\n" +
+            "Operation: antumbra write $part from ${writeFileName ?: file.name}\n" +
                 "Size: ${file.length()} bytes\nSHA-256: $writeFileSha\n" +
-                "Status: ${statusOf("write")}$boot1Note$scatterNote\n\n" +
-                "There is NO backup of this partition — this overwrites it.$brickNote",
+                "Writes are verified by read-back.$boot1Note$scatterNote\n\n" +
+                "There is no backup of this partition. This overwrites it.$brickNote",
         ) { runSingleWrite(part, file) }
     }
 
@@ -991,22 +981,22 @@ class BromUi(
         Thread {
             acquireWakeFn()
             try {
-                blog("BROM write [${statusOf("write")}]: $part <- ${file.name} (${file.length()} bytes)")
+                blog("BROM write: $part from ${file.name} (${file.length()} bytes)")
                 val r = try {
                     val entry = scatterEntryFor(part)
                     if (entry != null) s.writeScatterEntry(entry, file) { blog(it) }
                     else s.writePartition(part, file) { blog(it) }
                 } catch (e: Exception) {
-                    blog("BROM write STOPPED LOUDLY: $part failed mid-write (${e.message}) — USB disconnect or DA error. No retry: a partial write must not be re-run blind.")
+                    blog("BROM write stopped: $part failed mid-write (${e.message}) — USB disconnect or DA error. No retry: a partial write must not be re-run blind.")
                     activity.runOnUiThread {
-                        Toast.makeText(activity, "Write STOPPED — see log, no retry", Toast.LENGTH_LONG).show()
+                        Toast.makeText(activity, "Write stopped — see log. No retry.", Toast.LENGTH_LONG).show()
                     }
                     return@Thread
                 }
                 if (!r.isOk()) {
-                    blog("BROM write FAILED: $part: ${r.text()} — STOP, no retry")
+                    blog("BROM write FAILED: $part: ${r.text()} — stopping, no retry")
                     activity.runOnUiThread {
-                        Toast.makeText(activity, "Write FAILED — see log", Toast.LENGTH_LONG).show()
+                        Toast.makeText(activity, "Write failed — see log", Toast.LENGTH_LONG).show()
                     }
                     return@Thread
                 }
@@ -1065,23 +1055,23 @@ class BromUi(
                     is ScatterPlanResult.Fail -> {
                         blankflashPlan = null
                         activity.runOnUiThread {
-                            blankText.text = "Blankflash plan REFUSED: ${result.reason}"
+                            blankText.text = "Blankflash plan refused: ${result.reason}"
                             blankCheckContainer.removeAllViews()
                             blankflashCheckboxes.clear()
                             blankflashGptCheckbox = null
                         }
-                        blog("BROM blankflash plan REFUSED: ${result.reason}")
+                        blog("BROM blankflash plan refused: ${result.reason}")
                         return@Thread
                     }
                     is ScatterPlanResult.Ok -> result.plan
                 }
                 blankflashPlan = plan
                 val planText = plan.entries.joinToString("\n") { e ->
-                    "• ${e.partition} <- ${e.fileName} (${e.sizeBytes} bytes, sha256=${e.sha256})" +
+                    "• ${e.partition} from ${e.fileName} (${e.sizeBytes} bytes, sha256=${e.sha256})" +
                         if (e.isBoot1) " [BOOT1]" else ""
                 }
                 val warnText = if (plan.warnings.isNotEmpty()) {
-                    "\nWARNINGS:\n" + plan.warnings.joinToString("\n") { "• $it" }
+                    "\nWarnings:\n" + plan.warnings.joinToString("\n") { "• $it" }
                 } else ""
                 val gptText = "\n${BromScatter.PGPT_NOTE}\n${BromScatter.SGPT_NOTE}\n" +
                     "GPT entries built from scatter: ${plan.gptEntries.size}."
@@ -1092,7 +1082,7 @@ class BromUi(
                     for (e in plan.entries) {
                         val box = UiStyle.styledCheckBox(
                             activity,
-                            "${e.partition} <- ${e.fileName} (${e.sizeBytes} bytes)" +
+                            "${e.partition} from ${e.fileName} (${e.sizeBytes} bytes)" +
                                 if (e.isBoot1) " [BOOT1]" else "",
                             true,
                         ) {}
@@ -1120,12 +1110,12 @@ class BromUi(
     private fun runBlankflash() {
         val plan = blankflashPlan ?: run {
             toastFn("Pick a blankflash folder first — no plan loaded")
-            blog("BROM blankflash BLOCKED: no plan loaded")
+            blog("BROM blankflash blocked: no plan loaded")
             return
         }
         if (plan.entries.size != BromConstants.BLANKFLASH_ORDER.size) {
             toastFn("Blankflash plan is incomplete — pick a folder with all 11 partitions")
-            blog("BROM blankflash BLOCKED: plan has ${plan.entries.size}/11 partitions")
+            blog("BROM blankflash blocked: plan has ${plan.entries.size}/11 partitions")
             return
         }
         val selectedEntries = plan.entries.filterIndexed { i, _ ->
@@ -1134,7 +1124,7 @@ class BromUi(
         val writeGpt = blankflashGptCheckbox?.isChecked == true
         if (selectedEntries.isEmpty() && !writeGpt) {
             toastFn("Select at least one partition or GPT")
-            blog("BROM blankflash BLOCKED: nothing selected — check a partition or Write GPT")
+            blog("BROM blankflash blocked: nothing selected — check a partition or Write GPT")
             return
         }
         val s = session ?: run {
@@ -1147,7 +1137,7 @@ class BromUi(
             "• GPT: skipped (not selected)\n"
         }
         val summary = selectedEntries.joinToString("\n") { e ->
-            "• ${e.partition} <- ${e.fileName} (${e.sizeBytes} bytes)"
+            "• ${e.partition} from ${e.fileName} (${e.sizeBytes} bytes)"
         }
         val title = if (writeGpt) {
             "Run blankflash (GPT + ${selectedEntries.size} partition${if (selectedEntries.size == 1) "" else "s"})?"
@@ -1155,12 +1145,12 @@ class BromUi(
             "Run blankflash (${selectedEntries.size} partition${if (selectedEntries.size == 1) "" else "s"}, no GPT)?"
         }
         val gptNote = if (writeGpt) {
-            "FIRST the GPT is rebuilt from the scatter and written " +
-                "(primary + backup, ${plan.gptEntries.size} entries) — this is " +
-                "the highest-risk step in the whole app. A bad GPT bricks the " +
-                "partition table; it is verified by read-back before any " +
-                "partition writes, and the run stops if the table does not " +
-                "match. Then each partition writes once, in scatter order. "
+            "First, the GPT is rebuilt from the scatter and written " +
+                "(primary and backup, ${plan.gptEntries.size} entries). This is " +
+                "the highest-risk step in the app. A bad GPT breaks the " +
+                "partition table, so it is verified by read-back before any " +
+                "partition is written, and the run stops if the table does not " +
+                "match. Then each partition is written once, in scatter order. "
         } else {
             "No GPT write — partitions only. "
         }
@@ -1168,7 +1158,7 @@ class BromUi(
             title,
             "$gptLine$summary\n\n" +
                 gptNote +
-                "The run STOPS on the first failure — no auto-retry. " +
+                "The run stops on the first failure. There is no auto-retry. " +
                 "A reset runs at the end, so the phone reboots into fastboot.",
         ) {
             revealLogFn()
@@ -1177,20 +1167,20 @@ class BromUi(
                 acquireWakeFn()
                 try {
                     val what = if (writeGpt) "GPT + ${selectedEntries.size} partition(s)" else "${selectedEntries.size} partition(s), no GPT"
-                    blog("BROM blankflash [${statusOf("gpt-write")}]: starting $what")
+                    blog("BROM blankflash: starting $what")
                     val r = try {
                         s.runBlankflash(plan, selectedEntries, writeGpt, scatterFile) { blog(it) }
                     } catch (e: Exception) {
-                        blog("BROM blankflash STOPPED LOUDLY: run failed mid-way (${e.message}) — USB disconnect or DA error. No retry.")
+                        blog("BROM blankflash stopped: run failed mid-way (${e.message}) — USB disconnect or DA error. No retry.")
                         activity.runOnUiThread {
-                            Toast.makeText(activity, "Blankflash STOPPED — see log, no retry", Toast.LENGTH_LONG).show()
+                            Toast.makeText(activity, "Blankflash stopped — see log. No retry.", Toast.LENGTH_LONG).show()
                         }
                         return@Thread
                     }
                     if (!r.isOk()) {
-                        blog("BROM blankflash FAILED: ${r.text()} — STOP, no retry")
+                        blog("BROM blankflash FAILED: ${r.text()} — stopping, no retry")
                         activity.runOnUiThread {
-                            Toast.makeText(activity, "Blankflash STOPPED — see log", Toast.LENGTH_LONG).show()
+                            Toast.makeText(activity, "Blankflash stopped — see log", Toast.LENGTH_LONG).show()
                         }
                         return@Thread
                     }
@@ -1210,7 +1200,7 @@ class BromUi(
             toastFn("Connect first")
             return
         }
-        blog("BROM reset [${statusOf("reset")}]: resetting target (reboot into fastboot).")
+        blog("BROM reset: resetting target (reboot into fastboot).")
         Thread {
             try {
                 val r = s.reset { blog(it) }

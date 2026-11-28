@@ -116,8 +116,8 @@ object BromScatter {
     // construction is verified file-only against mtkclient's own GPT
     // parser; the on-device write itself is UNTESTED and is verified
     // by reading the table back after writing.
-    const val SGPT_NOTE = "SGPT stage: done in-app - backup GPT built from the scatter by GptBuilder, written only when the Write GPT box is checked, verified by read-back."
-    const val PGPT_NOTE = "PGPT stage: done in-app - primary GPT built from the scatter by GptBuilder, written only when the Write GPT box is checked, verified by read-back."
+    const val SGPT_NOTE = "Backup GPT: built from the scatter in the app, written only when the Write GPT box is checked, verified by read-back."
+    const val PGPT_NOTE = "Primary GPT: built from the scatter in the app, written only when the Write GPT box is checked, verified by read-back."
 
     // The scatter file inside a blankflash package folder. The Nevada
     // package names it MT6835_Android_scatter_blankflash.xml; match any

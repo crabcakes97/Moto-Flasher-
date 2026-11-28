@@ -205,7 +205,7 @@ object Penumbra {
             val code = try { proc.waitFor() } catch (_: Exception) { -1 }
             val elapsed = System.currentTimeMillis() - started
             if (killed.get()) {
-                val hint = "Antumbra killed: no output for ${inactivityTimeoutMs / 1000}s or total over ${timeoutMs / 1000}s. The binary has no flash timeout of its own, so the app kills hung runs (1.1.21-style). The phone may have re-enumerated mid-run — tap the button again."
+                val hint = "Antumbra stopped: no output for ${inactivityTimeoutMs / 1000}s, or total over ${timeoutMs / 1000}s. The binary has no flash timeout of its own, so the app stops hung runs. The phone may have re-enumerated mid-run. Tap the button again."
                 out.append(hint).append('\n')
                 onLine(hint)
                 Result(-1, out.toString())

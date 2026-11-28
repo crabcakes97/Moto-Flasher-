@@ -1,5 +1,6 @@
 package com.cronch.motoflasher
 
+import android.animation.ValueAnimator
 import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -8,6 +9,8 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
 import android.provider.DocumentsContract
 import android.provider.MediaStore
@@ -17,6 +20,7 @@ import android.view.View
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -36,6 +40,7 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.OutputStream
 import java.io.PrintStream
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
@@ -67,6 +72,8 @@ class MainActivity : Activity() {
     private val REQ_CUSTOM_KEY = 4
     private val REQ_TWRP_IMG = 5
     private val REQ_LK_FILE = 6
+    // 2.0.13: boot image inspector picker (read-only).
+    private val REQ_BOOT_INSPECT = 7
 
     // 2.0.1 tabs: Home / Flash / BROM / Val / More. 2.0.7 adds the ADB tab.
     // 2.0.8 adds the Extras tab (LK commands).
@@ -80,8 +87,39 @@ class MainActivity : Activity() {
 
     private lateinit var statusText: TextView
     private lateinit var deviceText: TextView
+    private lateinit var deviceCard: LinearLayout
     private lateinit var logText: TextView
     private lateinit var logScroll: ScrollView
+    // 2.0.13: animation + operation state. opCount tracks running
+    // flash/BROM/ADB/Val operations (incremented by opStarted,
+    // decremented by opFinished — acquireWake/releaseWake hook in
+    // too, which covers the BROM writes). It drives the progress
+    // strip, the header bolt glow, the status LED pulse, the result
+    // edge flash, and gates the Home device watcher so it never
+    // fights an operation for the USB device.
+    private lateinit var progressStrip: UiStyle.ProgressStripView
+    private lateinit var edgeFlash: UiStyle.EdgeFlashView
+    private lateinit var boltView: View
+    private var boltPulse: ValueAnimator? = null
+    private val opCount = AtomicInteger(0)
+    // 2.0.13: live device watcher (Home tab). Polls `fastboot
+    // devices` quietly every ~3s; logs only on change.
+    private val watcherHandler = Handler(Looper.getMainLooper())
+    private var watcherRunning = false
+    @Volatile private var lastSerial: String? = null
+    private val deviceInfoCache = mutableMapOf<String, Pair<String, String>>()
+    private val watcherTick = object : Runnable {
+        override fun run() {
+            watcherPoll()
+            if (watcherRunning) watcherHandler.postDelayed(this, 3000)
+        }
+    }
+    // 2.0.13: boot image inspector readout (Flash tab).
+    private lateinit var inspectText: TextView
+    // 2.0.13: Val flow step chips (pull/analyze/patch/flash/unlock/verify).
+    private val valChips = mutableListOf<TextView>()
+    private var valChipPulse: ValueAnimator? = null
+    private var valActiveChip = -1
     // 2.0.1 app shell: one ScrollView per tab, only the active one
     // visible. revealLog() switches to the More tab, where the log lives.
     private lateinit var tabScrolls: Array<ScrollView>
@@ -298,7 +336,12 @@ class MainActivity : Activity() {
             background = UiStyle.pageBackground()
         }
         val appBar = UiStyle.appBar(this)
+        boltView = appBar.bolt
         shell.addView(appBar.bar)
+        // 2.0.13: operation progress strip under the title bar
+        // (hidden until an operation runs).
+        progressStrip = UiStyle.ProgressStripView(this)
+        shell.addView(progressStrip)
 
         fun tabRoot(): LinearLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -331,12 +374,29 @@ class MainActivity : Activity() {
         }
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f,
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
             )
         }
         tabScrolls.forEach { content.addView(it) }
-        shell.addView(content)
+        // 2.0.13: the edge-flash overlay sits on top of the content
+        // (never clickable) so an operation result can flash the
+        // screen edge green/red without touching any card.
+        edgeFlash = UiStyle.EdgeFlashView(this).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+            )
+        }
+        val contentFrame = FrameLayout(this).apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f,
+            )
+            addView(content)
+            addView(edgeFlash)
+        }
+        shell.addView(contentFrame)
 
         tabBar = UiStyle.tabBar(
             this,
@@ -361,9 +421,10 @@ class MainActivity : Activity() {
         homeRoot.addView(statusCard)
 
         section(homeRoot, "Device")
+        deviceCard = card
         card.addView(UiStyle.ghostButton(this, "Refresh") { refreshDevices() })
         card.addView(UiStyle.ghostButton(this, "Getvar all") { getvarAll() })
-        deviceText = UiStyle.ledStatus(this, "No device checked yet.")
+        deviceText = UiStyle.ledStatus(this, "No device")
         card.addView(deviceText)
 
         section(flashRoot, "Flash one partition")
@@ -380,7 +441,7 @@ class MainActivity : Activity() {
         // before) / Slot A / Slot B. The picked slot is applied to the
         // A/B partition names in the flash commands; the checkbox labels
         // below update to show the partition that will actually be flashed.
-        card.addView(UiStyle.body(this, "Target slot. Active = current slot."))
+        card.addView(UiStyle.body(this, "Target slot for A/B partitions. Active is the phone's current slot."))
         slotRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         card.addView(slotRow)
         refreshSlotRow()
@@ -417,7 +478,7 @@ class MainActivity : Activity() {
         card.addView(UiStyle.actionButton(this, "Pick key file") { pickFile(REQ_CUSTOM_KEY) })
         card.addView(UiStyle.actionButton(this, "Flash key") { flashCustomKey() })
         card.addView(UiStyle.dangerButton(this, "Erase key") { eraseCustomKey() })
-        card.addView(UiStyle.body(this, "See Bootloader status."))
+        card.addView(UiStyle.body(this, "Use Bootloader status to check the result."))
 
         section(moreRoot, "More fastboot")
         card.addView(UiStyle.ghostButton(this, "flashing unlock") { fbCmd(listOf("flashing", "unlock"), "flashing unlock") })
@@ -427,7 +488,7 @@ class MainActivity : Activity() {
         card.addView(UiStyle.ghostButton(this, "Continue boot") { fbCmd(listOf("continue"), "continue") })
 
         section(flashRoot, "Quick flash")
-        card.addView(UiStyle.body(this, "Tap a partition. Pick its image. Confirm."))
+        card.addView(UiStyle.body(this, "Tap a partition, pick its image, then confirm."))
         val quickParts = listOf(
             "boot", "init_boot", "vendor_boot", "recovery", "dtbo",
             "vbmeta", "vbmeta_system", "super", "logo", "modem", "dsp", "lk",
@@ -453,34 +514,50 @@ class MainActivity : Activity() {
         card.addView(UiStyle.actionButton(this, "Boot TWRP") { bootTwrp() })
 
         section(flashRoot, "Quick erase")
-        card.addView(UiStyle.body(this, "No format command. Erase only."))
+        card.addView(UiStyle.body(this, "This fastboot has no format command. Erase only."))
         for (part in listOf("userdata", "cache", "boot", "recovery")) {
             card.addView(UiStyle.dangerButton(this, "Erase $part") { erasePartNamed(part) })
         }
 
         section(flashRoot, "vbmeta disabler")
-        card.addView(UiStyle.body(this, "Empty vbmeta, verification off. Needs unlocked bootloader. Flash first."))
+        card.addView(UiStyle.body(this, "Flashes an empty vbmeta with verification off. Needs an unlocked bootloader. Flash this first."))
         card.addView(UiStyle.dangerButton(this, "Disable verity: vbmeta") { disableVerity("vbmeta") })
         card.addView(UiStyle.dangerButton(this, "Disable verity: vbmeta_system") { disableVerity("vbmeta_system") })
         card.addView(UiStyle.dangerButton(this, "Disable verity: both") { disableVerity("both") })
+
+        // 2.0.13: read-only boot image inspector. Pick an .img and
+        // the header facts (format, sizes, page size, cmdline, OS
+        // version) are logged and shown. Nothing is flashed here.
+        section(flashRoot, "Boot image inspector")
+        card.addView(UiStyle.body(this, "Reads a boot or vendor boot image header and shows what is inside. Read-only."))
+        card.addView(UiStyle.actionButton(this, "Inspect boot image") { pickFile(REQ_BOOT_INSPECT) })
+        inspectText = UiStyle.ledStatus(this, "No image inspected yet.")
+        card.addView(inspectText)
 
         section(valRoot, "Val Protocol")
         // 2.0.10: September warning lives here ONLY (Kyle's order).
         val septVal = UiStyle.ledStatus(this, "Can't unlock bootloader with Val on units with the September patch — it's patched.")
         septVal.setStatus(UiStyle.Status.WAIT)
         card.addView(septVal)
-        card.addView(UiStyle.body(this, "Pulls the LK, patches it, flashes it back. Patched file is checked before flashing. CERT2 isn't checked in-app."))
+        card.addView(UiStyle.body(this, "Pulls the LK, patches it, and flashes it back. The patched file is checked before flashing. CERT2 is not checked in the app."))
         lkStatusText = UiStyle.ledStatus(this, "No LK file analyzed yet.")
         card.addView(lkStatusText)
-        valFlowText = UiStyle.status(this, "Flow: 1 pull … · 2 analyze … · 3 patch … · 4 flash · 5 unlock … · 6 verify")
-        card.addView(valFlowText)
+        // 2.0.13: the flow readout is a row of step chips now —
+        // done steps are solid accent, the active step pulses.
+        val flowRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        for (label in listOf("Pull", "Analyze", "Patch", "Flash", "Unlock", "Verify")) {
+            val chip = UiStyle.stepChip(this, label)
+            valChips.add(chip)
+            flowRow.addView(chip)
+        }
+        card.addView(flowRow)
         card.addView(UiStyle.actionButton(this, "Pull LK + analyze") { pullPartition("lk") })
         valPresetInput = UiStyle.input(this, "preset", "unlock-serial")
         card.addView(valPresetInput)
         // 2.0.10: FRP presets as taps that fill the preset box.
         // frp-skip patches the FRP check out. frp-compare sets what the
         // FRP check compares against (value in the box below, default 1).
-        card.addView(UiStyle.body(this, "FRP presets. Tap one."))
+        card.addView(UiStyle.body(this, "FRP presets. Tap one to fill the preset box."))
         val frpRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         frpRow.addView(UiStyle.rowButton(this, "frp-skip") {
             valPresetInput.setText("frp-skip")
@@ -502,7 +579,7 @@ class MainActivity : Activity() {
         valKeyText = UiStyle.status(this, "No unlock key generated yet.")
         card.addView(valKeyText)
         card.addView(UiStyle.actionButton(this, "Generate key") { runValKeygen() })
-        card.addView(UiStyle.body(this, "Flash the patched LK below. Key goes to the Unlock box. If unlock fails, type the key on a PC."))
+        card.addView(UiStyle.body(this, "Flash the patched LK below. The key goes to the unlock box. If unlock fails, type the key from a PC."))
         card.addView(UiStyle.actionButton(this, "Pick LK file") { pickFile(REQ_LK_FILE) })
         card.addView(UiStyle.actionButton(this, "Analyze LK file") { analyzeLkFile() })
         card.addView(UiStyle.actionButton(this, "Extract lk payload") { extractLkPayload() })
@@ -530,7 +607,7 @@ class MainActivity : Activity() {
         bromUi.addTo(bromRoot)
 
         section(valRoot, "Puller")
-        card.addView(UiStyle.body(this, "Reads partitions off the target. Needs USB debugging, adb allowed, temp root on the target."))
+        card.addView(UiStyle.body(this, "Reads partitions off the target phone. Needs USB debugging on, adb allowed, and temp root on the target."))
         pullPartInput = UiStyle.input(this, "partition to pull")
         card.addView(pullPartInput)
         card.addView(UiStyle.actionButton(this, "Pull partition") { pullPartition(pullPartInput.text.toString().trim()) })
@@ -548,7 +625,7 @@ class MainActivity : Activity() {
         // and a short summary. No device attached = adb says so plainly,
         // never a fake success.
         section(adbRoot, "ADB")
-        card.addView(UiStyle.body(this, "adb over OTG. Works in Android and TWRP. USB debugging on. Tap Allow on the device. Output in the log."))
+        card.addView(UiStyle.body(this, "adb over OTG. Works in Android and TWRP. Turn on USB debugging and tap Allow on the device. Output goes to the log."))
         adbInput = UiStyle.input(this, "adb args or shell command")
         card.addView(adbInput)
         card.addView(UiStyle.actionButton(this, "Run adb command") { runAdbInput() })
@@ -584,7 +661,7 @@ class MainActivity : Activity() {
         })
         // 2.0.8: LK-derived presets — tap to fill the box, then Run.
         // The full runnable list is on the Extras tab.
-        card.addView(UiStyle.body(this, "Tap to fill the box. Then Run."))
+        card.addView(UiStyle.body(this, "Tap a preset to fill the box, then Run."))
         val rawRow1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         rawRow1.addView(UiStyle.gridButton(this, "erase …") { rawInput.setText("erase ") })
         rawRow1.addView(UiStyle.gridButton(this, "getvar all") { rawInput.setText("getvar all") })
@@ -664,6 +741,11 @@ class MainActivity : Activity() {
         }
         logRow.addView(followButton)
         card.addView(logRow)
+        // 2.0.13: save the full log to Download/MotoFlasher/logs/
+        // (same publish path as the Val outputs).
+        val logRow2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        logRow2.addView(UiStyle.rowButton(this, "Save log") { saveLog() })
+        card.addView(logRow2)
         logCard = card
 
         // 2.0.8: Extras tab — every command the Nevada LK answers,
@@ -709,12 +791,12 @@ class MainActivity : Activity() {
         }
         extrasRows(fbEntries)
         card.addView(UiStyle.sectionTitle(this, "OEM"))
-        card.addView(UiStyle.body(this, "Argument box is added when needed."))
+        card.addView(UiStyle.body(this, "The argument box value is added to the command when needed."))
         extrasRows(LK_OEM_CMDS.map { sub -> "oem $sub" to { extrasOem(sub) } })
         card.addView(UiStyle.sectionTitle(this, "OEM (unproven)"))
-        card.addView(UiStyle.body(this, "Strings only. May not run."))
+        card.addView(UiStyle.body(this, "Found as strings only. They may not run."))
         extrasRows(LK_OEM_STRING_ONLY.map { sub -> "oem $sub" to { extrasOem(sub) } })
-        card.addView(UiStyle.body(this, "download / partition / super aren't commands. super is a partition name."))
+        card.addView(UiStyle.body(this, "download, partition, and super are not commands. super is a partition name."))
 
         // 2.0.8: theme picker — persisted, applied on next launch.
         section(moreRoot, "Theme")
@@ -753,30 +835,25 @@ class MainActivity : Activity() {
         aboutCard.addView(UiStyle.body(this, "liblk by R0rt1z2. Val Protocol by Maikyxd."))
         moreRoot.addView(aboutCard)
 
-        // Startup checks on a background thread.
+        // Startup checks on a background thread. 2.0.13: the STATUS
+        // card shows the root line only (Kyle's order) — binary
+        // install failures still go to the log so nothing is hidden.
         Thread {
             val installErr = if (!Fastboot.isInstalled(this)) Fastboot.install(this) else null
             val adbErr = if (!Adb.isInstalled(this)) Adb.install(this) else null
             val antumbraErr = if (!Penumbra.isInstalled(this)) Penumbra.install(this) else null
+            if (installErr != null) logLine("fastboot install failed: $installErr")
+            if (adbErr != null) logLine("adb install failed: $adbErr")
+            if (antumbraErr != null) logLine("antumbra ${Penumbra.VERSION} install failed: $antumbraErr")
             rootOk = Fastboot.hasRoot { logLine(it) }
             runOnUiThread {
-                val fbState = when {
-                    installErr != null -> "fastboot install FAILED: $installErr"
-                    else -> "fastboot ready"
-                }
-                val adbState = when {
-                    adbErr != null -> "adb not bundled: $adbErr"
-                    else -> "adb ready"
-                }
-                val penState = when {
-                    antumbraErr != null -> "antumbra ${Penumbra.VERSION} install FAILED: $antumbraErr"
-                    else -> "antumbra ${Penumbra.VERSION} ready"
-                }
-                statusText.text = "Root: ${if (rootOk) "YES" else "NO"}\n$fbState\n$adbState\n$penState"
+                statusText.text = "Root: ${if (rootOk) "YES" else "NO"}"
                 statusText.setLed(if (rootOk) UiStyle.Status.OK else UiStyle.Status.FAIL)
                 if (!rootOk) toast("No root. Flashing needs root.")
             }
         }.start()
+        // 2.0.13: start the live device watcher (Home tab polls).
+        startWatcher()
     }
 
     // ---------- helpers ----------
@@ -797,6 +874,30 @@ class MainActivity : Activity() {
         logText.post {
             logText.post { if (followLog) logScroll.scrollTo(0, logText.bottom) }
         }
+    }
+
+    /** 2.0.13: write the full log to Download/MotoFlasher/logs/
+     *  log-<yyyyMMdd-HHmmss>.txt via BromDownloads (MediaStore, root
+     *  cp fallback) and log the path. The snapshot is taken on the
+     *  UI thread, where logBuf is mutated. */
+    private fun saveLog() {
+        val text = logBuf.toString()
+        if (text.isBlank()) { toast("Log is empty"); return }
+        val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US)
+            .format(java.util.Date())
+        val name = "log-$stamp.txt"
+        Thread {
+            val tmp = File(cacheDir, name)
+            tmp.writeText(text)
+            val published = BromDownloads.publish(this, tmp, "logs", name) { logLine(it) }
+            if (published != null) {
+                logLine("Log saved: ${published.absolutePath} (${published.length()} bytes)")
+                runOnUiThread { toast("Log saved to Download/MotoFlasher/logs/") }
+            } else {
+                logLine("Log save failed: could not publish $name to Download/MotoFlasher/logs/")
+                runOnUiThread { toast("Log save failed — see log") }
+            }
+        }.start()
     }
 
     private fun logLine(s: String) {
@@ -910,13 +1011,21 @@ class MainActivity : Activity() {
         }
     }
 
-    /** 2.0.1: switch the visible tab (only one tab ScrollView shows). */
+    /** 2.0.1: switch the visible tab (only one tab ScrollView shows).
+     *  2.0.13: the incoming tab fades/slides in (~150ms) and the
+     *  tab-bound pulses are refreshed (hidden tabs stop pulsing). */
     private fun showTab(index: Int) {
         currentTab = index
         tabScrolls.forEachIndexed { i, scroll ->
             scroll.visibility = if (i == index) View.VISIBLE else View.GONE
         }
         tabBar.select(index)
+        val incoming = tabScrolls[index]
+        incoming.animate().cancel()
+        incoming.alpha = 0f
+        incoming.translationY = dp(12).toFloat()
+        incoming.animate().alpha(1f).translationY(0f).setDuration(150).start()
+        refreshPulses()
         // 2.0.8: switching back to the log tab re-scrolls to the bottom
         // when follow is on — lines logged while the tab was hidden
         // never scrolled (the view was GONE, bottom was 0).
@@ -941,9 +1050,7 @@ class MainActivity : Activity() {
         if (!rootOk) {
             rootOk = Fastboot.hasRoot { logLine(it) }
             if (rootOk) {
-                val cur = statusText.text.toString()
-                val rest = cur.substringAfter("\n", "")
-                statusText.text = "Root: YES" + if (rest.isNotEmpty()) "\n$rest" else ""
+                statusText.text = "Root: YES"
                 statusText.setLed(UiStyle.Status.OK)
                 logLine("Root re-check passed — flashing allowed")
             }
@@ -965,23 +1072,113 @@ class MainActivity : Activity() {
         wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "MotoFlasher:flash").apply {
             acquire(30 * 60 * 1000L)
         }
+        // 2.0.13: every wake-locked run is an operation (flash-all,
+        // single flash, disable-verity, BROM writes) — count it so
+        // the progress strip and pulses cover them all.
+        opStarted()
     }
 
     private fun releaseWake() {
         try { wakeLock?.release() } catch (_: Exception) {}
         wakeLock = null
+        opFinished(null)
+    }
+
+    // ---------- 2.0.13: operation tracking + animations ----------
+
+    /** An operation started. First one in shows the progress strip
+     *  (indeterminate; flash-all switches it to determinate), starts
+     *  the header bolt glow and the status LED pulse. UI work is
+     *  posted — callers run on background threads. */
+    private fun opStarted() {
+        if (opCount.incrementAndGet() == 1) {
+            runOnUiThread {
+                progressStrip.showIndeterminate()
+                startBoltPulse()
+                refreshPulses()
+            }
+        }
+    }
+
+    /** An operation finished. Last one out hides the strip, stops
+     *  the pulses, and (when the caller knows the verdict) flashes
+     *  the screen edge green or red. [success] null = no flash. */
+    private fun opFinished(success: Boolean?) {
+        if (opCount.decrementAndGet() <= 0) {
+            opCount.set(0)
+            runOnUiThread {
+                progressStrip.hide()
+                stopBoltPulse()
+                refreshPulses()
+                if (success != null) {
+                    edgeFlash.flash(if (success) UiStyle.GREEN else UiStyle.RED)
+                }
+            }
+        }
+    }
+
+    /** Subtle glow pulse on the header bolt while an operation runs
+     *  (alpha 0.55..1.0, ~900ms each way). Never runs idle. */
+    private fun startBoltPulse() {
+        stopBoltPulse()
+        boltPulse = ValueAnimator.ofFloat(0.55f, 1f).apply {
+            duration = 900
+            repeatMode = ValueAnimator.REVERSE
+            repeatCount = ValueAnimator.INFINITE
+            addUpdateListener { boltView.alpha = it.animatedValue as Float }
+            start()
+        }
+    }
+
+    private fun stopBoltPulse() {
+        boltPulse?.cancel()
+        boltPulse = null
+        if (::boltView.isInitialized) boltView.alpha = 1f
+    }
+
+    /** Start/stop the tab-bound pulses for the current state:
+     *  status LED pulses while an operation runs on Home; the Val
+     *  active-step chip pulses while the Val tab is visible.
+     *  Everything else stays solid. Called on tab switch and on
+     *  operation start/finish. */
+    private fun refreshPulses() {
+        if (opCount.get() > 0 && currentTab == TAB_HOME) {
+            UiStyle.startLedPulse(statusText)
+        } else {
+            UiStyle.stopLedPulse(statusText)
+        }
+        refreshValChipPulse()
+    }
+
+    /** Pulse the Val flow's active step chip (alpha 0.6..1.0) while
+     *  the Val tab is visible; solid otherwise. */
+    private fun refreshValChipPulse() {
+        valChipPulse?.cancel()
+        valChipPulse = null
+        for (chip in valChips) chip.alpha = 1f
+        if (currentTab != TAB_VAL) return
+        val chip = valChips.getOrNull(valActiveChip) ?: return
+        valChipPulse = ValueAnimator.ofFloat(0.6f, 1f).apply {
+            duration = 800
+            repeatMode = ValueAnimator.REVERSE
+            repeatCount = ValueAnimator.INFINITE
+            addUpdateListener { chip.alpha = it.animatedValue as Float }
+            start()
+        }
     }
 
     /** Run a fastboot command on a background thread, logging output. */
     private fun fbCmd(args: List<String>, label: String) {
         if (!Fastboot.isInstalled(this)) { toast("fastboot binary not installed"); return }
         logLine("$ fastboot ${args.joinToString(" ")}")
+        opStarted()
         Thread {
             val r = Fastboot.run(this, args) { logLine(it) }
             runOnUiThread {
                 logLine(if (r.ok) "OK: $label" else "FAILED: $label (exit ${r.exitCode})")
                 toast(if (r.ok) "$label: OK" else "$label: FAILED")
             }
+            opFinished(r.ok)
         }.start()
     }
 
@@ -990,23 +1187,96 @@ class MainActivity : Activity() {
     private fun refreshDevices() {
         if (!Fastboot.isInstalled(this)) { toast("fastboot binary not installed"); return }
         logLine("$ fastboot devices")
+        opStarted()
         Thread {
             val r = Fastboot.run(this, listOf("devices")) { logLine(it) }
             runOnUiThread {
-                deviceText.text = if (r.output.isBlank()) "No fastboot device.\nPlug in (OTG). Phone in fastboot mode."
+                deviceText.text = if (r.output.isBlank()) "No fastboot device.\nPlug in over OTG and put the phone in fastboot mode."
                     else "fastboot devices:\n${r.output}"
                 deviceText.setLed(if (r.output.isBlank()) UiStyle.Status.FAIL else UiStyle.Status.OK)
             }
+            opFinished(null)
         }.start()
     }
 
     private fun getvarAll() {
         if (!Fastboot.isInstalled(this)) { toast("fastboot binary not installed"); return }
         logLine("$ fastboot getvar all")
+        opStarted()
         Thread {
             val r = Fastboot.run(this, listOf("getvar", "all")) { logLine(it) }
             runOnUiThread { deviceText.text = r.output.ifBlank { "(no output)" }; deviceText.setLed(UiStyle.Status.INFO) }
+            opFinished(null)
         }.start()
+    }
+
+    // ---------- 2.0.13: live device watcher (Home) ----------
+
+    private fun startWatcher() {
+        if (watcherRunning) return
+        watcherRunning = true
+        watcherHandler.post(watcherTick)
+    }
+
+    private fun stopWatcher() {
+        watcherRunning = false
+        watcherHandler.removeCallbacks(watcherTick)
+    }
+
+    /** One quiet poll. Skips unless Home is showing, no operation
+     *  is running, and no BROM session is active — the watcher must
+     *  never fight an operation for the USB device. Logs only on
+     *  connect/disconnect; the DEVICE card updates only on change,
+     *  so a manual Getvar all readout is not clobbered. */
+    private fun watcherPoll() {
+        if (currentTab != TAB_HOME) return
+        if (opCount.get() > 0) return
+        if (::bromUi.isInitialized && bromUi.isBusy()) return
+        if (!Fastboot.isInstalled(this)) return
+        Thread {
+            val r = Fastboot.run(this, listOf("devices")) {}
+            val serial = r.output.lines().firstNotNullOfOrNull { line ->
+                val parts = line.trim().split(Regex("\\s+"))
+                if (parts.size >= 2 && parts[1] == "fastboot") parts[0] else null
+            }
+            if (serial == lastSerial) return@Thread
+            lastSerial = serial
+            if (serial == null) {
+                logLine("Device disconnected")
+                runOnUiThread {
+                    deviceText.text = "No device"
+                    deviceText.setLed(UiStyle.Status.INFO)
+                }
+                return@Thread
+            }
+            logLine("Device connected: $serial (fastboot)")
+            // Slot + lock state, fetched once per serial and cached.
+            val info = deviceInfoCache[serial] ?: run {
+                val slot = getvarQuiet("current-slot")
+                val unlocked = getvarQuiet("unlocked")
+                Pair(slot, unlocked).also { deviceInfoCache[serial] = it }
+            }
+            runOnUiThread {
+                val detail = buildString {
+                    if (info.first.isNotEmpty()) append("Slot: ${info.first}")
+                    if (info.second.isNotEmpty()) {
+                        if (isNotEmpty()) append(" · ")
+                        append("Unlocked: ${info.second}")
+                    }
+                }
+                deviceText.text = if (detail.isEmpty()) "$serial — fastboot" else "$serial — fastboot\n$detail"
+                deviceText.setLed(UiStyle.Status.OK)
+                UiStyle.pulseLedOnce(deviceText)
+                UiStyle.glowCardBorder(deviceCard)
+            }
+        }.start()
+    }
+
+    /** Quiet single getvar read for the watcher (no log output). */
+    private fun getvarQuiet(name: String): String {
+        val r = Fastboot.run(this, listOf("getvar", name)) {}
+        return Regex("$name:\\s*(\\S+)", RegexOption.IGNORE_CASE)
+            .find(r.output)?.groupValues?.getOrNull(1)?.trim().orEmpty()
     }
 
     // ---------- file picking ----------
@@ -1042,7 +1312,7 @@ class MainActivity : Activity() {
                     pendingApplySlot = true
                     partInput.setText(pending)
                     val effPending = if (applySlot) slotPartition(pending) else pending
-                    logLine("Quick-flash: $singleImgName -> $effPending")
+                    logLine("Quick flash: $singleImgName to $effPending")
                     flashSingle(applySlot)
                 }
             }
@@ -1077,6 +1347,7 @@ class MainActivity : Activity() {
                 toast("Picked custom key: $customKeyName")
                 logLine("Picked custom key: $customKeyName")
             }
+            REQ_BOOT_INSPECT -> inspectBootImage(uri)
             REQ_FOLDER -> {
                 folderUri = uri
                 try {
@@ -1099,6 +1370,64 @@ class MainActivity : Activity() {
         }
     }
 
+    /** 2.0.13: inspect a picked boot image. Reads only the first
+     *  64 KB (every header fits well inside that) plus the file
+     *  size, parses with BootImage, logs and displays the facts.
+     *  Read-only — nothing is copied for flashing or written. */
+    private fun inspectBootImage(uri: Uri) {
+        val name = displayName(uri)
+        logLine("Inspect boot image: $name")
+        Thread {
+            val head = try {
+                contentResolver.openInputStream(uri)?.use { input ->
+                    val buf = ByteArray(65536)
+                    var total = 0
+                    while (total < buf.size) {
+                        val n = input.read(buf, total, buf.size - total)
+                        if (n < 0) break
+                        total += n
+                    }
+                    buf.copyOf(total)
+                }
+            } catch (e: Exception) {
+                logLine("ERROR reading $name: ${e.message}")
+                runOnUiThread {
+                    inspectText.text = "Could not read $name: ${e.message}"
+                    inspectText.setLed(UiStyle.Status.FAIL)
+                }
+                return@Thread
+            }
+            if (head == null) {
+                logLine("ERROR reading $name: could not open the file")
+                runOnUiThread {
+                    inspectText.text = "Could not open $name."
+                    inspectText.setLed(UiStyle.Status.FAIL)
+                }
+                return@Thread
+            }
+            val size = fileSize(uri) ?: head.size.toLong()
+            val info = BootImage.inspect(head, size)
+            logLine("Boot image inspection ($name):")
+            for (line in info.lines) logLine("  $line")
+            runOnUiThread {
+                inspectText.text = info.lines.joinToString("\n")
+                inspectText.setLed(if (info.isBoot) UiStyle.Status.OK else UiStyle.Status.FAIL)
+            }
+        }.start()
+    }
+
+    /** File size behind a SAF Uri, or null when the provider does
+     *  not report one. */
+    private fun fileSize(uri: Uri): Long? {
+        return try {
+            contentResolver.query(uri, arrayOf("_size"), null, null, null)?.use { c ->
+                if (c.moveToFirst() && !c.isNull(0)) c.getLong(0) else null
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     /** Copy a SAF Uri into our cache dir so the fastboot binary gets a real path. Returns the file + sha256. */
     private fun stageFile(uri: Uri, name: String): Pair<File, String>? {
         return try {
@@ -1118,15 +1447,15 @@ class MainActivity : Activity() {
     // 2.0.1: every confirm is the themed dialog — dark violet card,
     // rainbow title, Exo 2, magenta Yes / ghost Cancel.
     private fun confirm(title: String, message: String, onYes: () -> Unit) {
-        UiStyle.styledDialog(this, title, message, "Yes, do it", "Cancel", onYes)
+        UiStyle.styledDialog(this, title, message, "Confirm", "Cancel", onYes)
     }
 
     private fun flashSingle(applySlot: Boolean = true) {
-        val uri = singleImgUri ?: run { toast("Pick an .img file first"); return }
+        val uri = singleImgUri ?: run { toast("Pick an image file first"); return }
         val part = partInput.text.toString().trim()
         if (part.isEmpty()) { toast("Type the partition name first"); return }
         if (part == "preloader") {
-            toast("fastboot can't flash preloader. Use BROM.")
+            toast("fastboot cannot flash the preloader. Use BROM.")
             return
         }
         if (!writeGate()) return
@@ -1144,7 +1473,7 @@ class MainActivity : Activity() {
                     "Flash $effPart?",
                     "Command: fastboot flash $effPart ${file.name}\n" +
                         "Size: ${file.length()} bytes\nSHA-256: $sha\n\n" +
-                        "No backup. This overwrites the partition. Make sure it's for this phone.",
+                        "There is no backup. This overwrites the partition. Make sure the image is for this phone.",
                 ) { runFlashSteps(listOf(Triple("flash", part, file)), applySlot) }
             }
         }.start()
@@ -1172,9 +1501,13 @@ class MainActivity : Activity() {
         val part = partInput.text.toString().trim()
         if (part.isEmpty()) { toast("Type the partition name first"); return }
         if (!writeGate()) return
-        confirm("Erase $part?",
-            "Command: fastboot erase $part\n\nWipes the partition. No undo.") {
-            fbCmd(listOf("erase", part), "erase $part")
+        // 2.0.13: erase honors the slot picker like flash does — the
+        // confirm and the command use the effective name.
+        val effPart = slotPartition(part)
+        if (effPart != part) logLine("slot ${slotLabel()}: $part becomes $effPart")
+        confirm("Erase $effPart?",
+            "Command: fastboot erase $effPart\n\nThis wipes the partition. There is no undo.") {
+            fbCmd(listOf("erase", effPart), "erase $effPart")
         }
     }
 
@@ -1183,12 +1516,14 @@ class MainActivity : Activity() {
     private fun bootloaderStatus() {
         if (!Fastboot.isInstalled(this)) { toast("fastboot binary not installed"); return }
         logLine("$ fastboot oem device-info")
+        opStarted()
         Thread {
             val r = Fastboot.run(this, listOf("oem", "device-info")) { logLine(it) }
             runOnUiThread {
                 deviceText.text = ("Bootloader status:\n" + r.output)
                 deviceText.setLed(UiStyle.Status.INFO)
             }
+            opFinished(null)
         }.start()
     }
 
@@ -1198,7 +1533,7 @@ class MainActivity : Activity() {
         if (!writeGate()) return
         confirm("Unlock the bootloader?",
             "Command: fastboot oem unlock $key\n\n" +
-                "UNLOCKING WIPES THE PHONE. All user data erased. Make sure the key is for this phone.") {
+                "Unlocking wipes the phone. All user data is erased. Make sure the key is for this phone.") {
             fbCmd(listOf("oem", "unlock", key), "oem unlock")
         }
     }
@@ -1207,7 +1542,7 @@ class MainActivity : Activity() {
         if (!writeGate()) return
         confirm("Relock the bootloader?",
             "Command: fastboot oem lock\n\n" +
-                "Relocking on custom images can BRICK it. Stock images only.") {
+                "Relocking with custom images can brick the phone. Use stock images only.") {
             fbCmd(listOf("oem", "lock"), "oem lock")
         }
     }
@@ -1234,9 +1569,12 @@ class MainActivity : Activity() {
 
     private fun eraseCustomKey() {
         if (!writeGate()) return
+        // 2.0.13: routed through slotPartition for consistency —
+        // avb_custom_key is not an A/B partition, so it is unchanged.
+        val effPart = slotPartition("avb_custom_key")
         confirm("Erase custom AVB key?",
-            "Command: fastboot erase avb_custom_key\n\nRemoves the custom key.") {
-            fbCmd(listOf("erase", "avb_custom_key"), "erase avb_custom_key")
+            "Command: fastboot erase $effPart\n\nThis removes the custom key.") {
+            fbCmd(listOf("erase", effPart), "erase $effPart")
         }
     }
 
@@ -1246,7 +1584,6 @@ class MainActivity : Activity() {
      *  the repack both consume the LkImage it produces — analyze is not a
      *  standalone viewer, it is step 2 of the flow. */
     private var valFlowFile: File? = null
-    private lateinit var valFlowText: TextView
     /** Original container bytes the flow's LkImage was parsed from — the
      *  repack splices untouched regions from these, so the patched
      *  container is a rebuild, not a re-serialization. */
@@ -1265,12 +1602,12 @@ class MainActivity : Activity() {
     private fun flashPartitionQuick(part: String) {
         pendingPartition = part
         pendingApplySlot = true
-        logLine("Quick-flash $part: pick the .img")
+        logLine("Quick flash $part: pick the image")
         pickFile(REQ_SINGLE_IMG)
     }
 
     private fun flashTwrp() {
-        val uri = twrpImgUri ?: run { toast("Pick a TWRP .img first"); return }
+        val uri = twrpImgUri ?: run { toast("Pick a TWRP image first"); return }
         if (!writeGate()) return
         Thread {
             val staged = stageFile(uri, twrpImgName ?: "twrp.img") ?: run {
@@ -1285,14 +1622,14 @@ class MainActivity : Activity() {
                     "Flash TWRP to $effTarget?",
                     "Command: fastboot flash $effTarget ${file.name}\n" +
                         "Size: ${file.length()} bytes\nSHA-256: $sha\n\n" +
-                        "Overwrites $effTarget. No backup.",
+                        "This overwrites $effTarget. There is no backup.",
                 ) { runFlashSteps(listOf(Triple("flash", twrpTarget, file))) }
             }
         }.start()
     }
 
     private fun bootTwrp() {
-        val uri = twrpImgUri ?: run { toast("Pick a TWRP .img first"); return }
+        val uri = twrpImgUri ?: run { toast("Pick a TWRP image first"); return }
         if (!writeGate()) return
         Thread {
             val staged = stageFile(uri, twrpImgName ?: "twrp.img") ?: run {
@@ -1317,10 +1654,14 @@ class MainActivity : Activity() {
      */
     private fun erasePartNamed(part: String) {
         if (!writeGate()) return
-        confirm("Erase $part?",
-            "Command: fastboot erase $part\n\n" +
-                "WIPES the partition. userdata = all user data. No undo.") {
-            fbCmd(listOf("erase", part), "erase $part")
+        // 2.0.13: slot picker applies here too (boot is an A/B
+        // partition; userdata/cache/recovery pass through unchanged).
+        val effPart = slotPartition(part)
+        if (effPart != part) logLine("slot ${slotLabel()}: $part becomes $effPart")
+        confirm("Erase $effPart?",
+            "Command: fastboot erase $effPart\n\n" +
+                "This wipes the partition. Erasing userdata removes all user data. There is no undo.") {
+            fbCmd(listOf("erase", effPart), "erase $effPart")
         }
     }
 
@@ -1350,7 +1691,7 @@ class MainActivity : Activity() {
         val label = args.joinToString(" ")
         if (dangerous) {
             confirm("Run $label?",
-                "Command: fastboot $label\n\nWipes the partition. No undo.") {
+                "Command: fastboot $label\n\nThis wipes the partition. There is no undo.") {
                 fbCmd(args, label)
             }
         } else {
@@ -1361,7 +1702,7 @@ class MainActivity : Activity() {
     /** Run a command behind a confirm dialog (dangerous Extras entries). */
     private fun extrasConfirmRun(args: List<String>, label: String) {
         confirm("Run $label?",
-            "Command: fastboot ${args.joinToString(" ")}\n\nCan change or wipe the phone. No undo.") {
+            "Command: fastboot ${args.joinToString(" ")}\n\nThis can change or wipe the phone. There is no undo.") {
             fbCmd(args, label)
         }
     }
@@ -1371,7 +1712,7 @@ class MainActivity : Activity() {
         val part = extrasArgInput.text.toString().trim()
         if (part.isEmpty()) { toast("Type the partition name first"); return }
         if (part == "preloader") {
-            toast("fastboot can't flash preloader. Use BROM.")
+            toast("fastboot cannot flash the preloader. Use BROM.")
             return
         }
         pendingPartition = part
@@ -1379,7 +1720,7 @@ class MainActivity : Activity() {
         // exact, the slot picker does not touch it.
         pendingApplySlot = false
         partInput.setText(part)
-        logLine("Extras flash $part: pick the .img")
+        logLine("Extras flash $part: pick the image")
         pickFile(REQ_SINGLE_IMG)
     }
 
@@ -1397,7 +1738,7 @@ class MainActivity : Activity() {
         val label = args.joinToString(" ")
         if (sub in LK_OEM_DANGEROUS) {
             confirm("Run $label?",
-                "Command: fastboot $label\n\nCan change or wipe the phone. No undo.") {
+                "Command: fastboot $label\n\nThis can change or wipe the phone. There is no undo.") {
                 fbCmd(args, label)
             }
         } else {
@@ -1413,9 +1754,11 @@ class MainActivity : Activity() {
         }
         adbStatusText.text = "Running ADB diagnose…"
         adbStatusText.setLed(UiStyle.Status.WAIT)
+        opStarted()
         Thread {
             val summary = Adb.diagnose(this) { logLine(it) }
             runOnUiThread { adbStatusText.text = summary; adbStatusText.setLed(if (summary.contains("device found")) UiStyle.Status.OK else UiStyle.Status.FAIL) }
+            opFinished(null)
         }.start()
     }
 
@@ -1431,14 +1774,14 @@ class MainActivity : Activity() {
         val effTargets = targets.map { slotPartition(it) }
         confirm("Disable verification on ${effTargets.joinToString(" + ")}?",
             "Command: fastboot --disable-verity --disable-verification flash <part> empty-vbmeta.img\n\n" +
-                "Flashes an empty vbmeta. Verification off.\n\nNeeds an UNLOCKED bootloader. Flash this first.") {
+                "Flashes an empty vbmeta with verification off.\n\nNeeds an unlocked bootloader. Flash this first.") {
             Thread {
                 acquireWake()
                 try {
                     val empty = Vbmeta.makeEmptyVbmeta(cacheDir)
                     logLine("empty vbmeta built: ${empty.length()} bytes sha256=${Fastboot.sha256(empty)}")
                     for ((raw, target) in targets.zip(effTargets)) {
-                        if (target != raw) logLine("slot ${slotLabel()}: $raw -> $target")
+                        if (target != raw) logLine("slot ${slotLabel()}: $raw becomes $target")
                         logLine("== disable-verity $target")
                         val r = Fastboot.run(
                             this,
@@ -1446,7 +1789,7 @@ class MainActivity : Activity() {
                         ) { logLine(it) }
                         if (!r.ok) {
                             logLine("FAILED: disable-verity $target (exit ${r.exitCode})")
-                            runOnUiThread { toast("Disabler FAILED on $target — see log") }
+                            runOnUiThread { toast("Disabler failed on $target — see log") }
                             return@Thread
                         }
                         logLine("OK: disable-verity $target")
@@ -1461,14 +1804,34 @@ class MainActivity : Activity() {
 
     // ---------- Val Protocol: liblk, LK picker, puller ----------
 
-    /** Render the Val flow's step state from the shared container. */
+    /** Render the Val flow's step state from the shared container.
+     *  2.0.13: chips — done steps solid accent, the first unfinished
+     *  step is active (and pulses while the Val tab shows). Flash
+     *  and verify have no completion flag in the flow state, so
+     *  flash is "active" once patched, and verify stays pending. */
     private fun updateValFlow() {
-        val pulled = if (valFlowFile != null) "done" else "…"
-        val analyzed = if (lkImage != null) "done" else "…"
-        val patched = if (valPatched) "done" else "…"
-        val keyed = if (valUnlockKey != null) "done" else "…"
-        valFlowText.text =
-            "Flow: 1 pull $pulled · 2 analyze $analyzed · 3 patch $patched · 4 flash · 5 unlock $keyed · 6 verify"
+        val done = listOf(
+            valFlowFile != null,   // pull
+            lkImage != null,       // analyze
+            valPatched,            // patch
+            false,                 // flash (no completion flag)
+            valUnlockKey != null,  // unlock
+            false,                 // verify (verifier held)
+        )
+        valActiveChip = done.indexOfFirst { !it }
+        runOnUiThread {
+            valChips.forEachIndexed { i, chip ->
+                UiStyle.setChipState(
+                    chip,
+                    when {
+                        done[i] -> UiStyle.ChipState.DONE
+                        i == valActiveChip -> UiStyle.ChipState.ACTIVE
+                        else -> UiStyle.ChipState.PENDING
+                    },
+                )
+            }
+            refreshValChipPulse()
+        }
     }
 
     private fun analyzeLkFile() {
@@ -1539,6 +1902,8 @@ class MainActivity : Activity() {
         val patchedBin = File(valDir, "lk.patched.bin")
         val outName = "lk.$preset.img"
         logLine("Val patch: preset=$preset secret=$secret frpCompareValue=$frpValue (Capstone analyze first — this takes a while on a phone)")
+        opStarted()
+        var patchOk = false
         Thread {
             try {
                 val loadErr = CapstoneNative.ensureLoaded(this)
@@ -1619,14 +1984,14 @@ class MainActivity : Activity() {
                 val rechecked = try {
                     LibLk.parse(repack.output)
                 } catch (e: Exception) {
-                    logLine("ERROR: patched container does NOT re-parse with liblk (${e.message}) — refused, not set as the flow file")
+                    logLine("ERROR: patched container does not re-parse with liblk (${e.message}) — refused, not set as the flow file")
                     runOnUiThread { toast("Patched file failed its re-parse check") }
                     return@Thread
                 }
                 val sha = Fastboot.sha256(outFile)
                 logLine("Patched container: ${outFile.absolutePath} (${outFile.length()} bytes, sha256=$sha)")
                 logLine("Partitions after patch: ${rechecked.partitions.map { it.name }.sorted()}")
-                logLine("NOTE: repack NOT verified in-app (verify_mtk_image.py is not ported). " +
+                logLine("NOTE: the repack is not verified in the app (verify_mtk_image.py is not ported). " +
                     "The container re-parses and CERT2 was re-signed, but run the Python verifier on a PC first if you want the full check.")
                 // Publish the finished files to Downloads so Kyle can find
                 // them in the Files app. The flow file for flashing must
@@ -1636,14 +2001,14 @@ class MainActivity : Activity() {
                 val publishedPatched = BromDownloads.publish(this, outFile, "val", outName) { logLine(it) }
                 val publishedBin = BromDownloads.publish(this, patchedBin, "val", "lk.patched.bin") { logLine(it) }
                 if (publishedBin == null) {
-                    logLine("DOWNLOADS WARNING: lk.patched.bin could NOT be published to Download/MotoFlasher/val/ — private copy is at ${patchedBin.absolutePath}")
+                    logLine("DOWNLOADS WARNING: lk.patched.bin could not be published to Download/MotoFlasher/val/ — private copy is at ${patchedBin.absolutePath}")
                 }
                 val analysisZip = File(valDir, "analysis-$preset.zip")
                 if (analysisDir.exists()) {
                     zipDir(analysisDir, analysisZip)
                     val publishedZip = BromDownloads.publish(this, analysisZip, "val", "analysis-$preset.zip") { logLine(it) }
                     if (publishedZip == null) {
-                        logLine("DOWNLOADS WARNING: analysis-$preset.zip could NOT be published to Download/MotoFlasher/val/ — private copy is at ${analysisZip.absolutePath}")
+                        logLine("DOWNLOADS WARNING: analysis-$preset.zip could not be published to Download/MotoFlasher/val/ — private copy is at ${analysisZip.absolutePath}")
                     }
                 } else {
                     logLine("DOWNLOADS WARNING: no analysis dir at ${analysisDir.absolutePath} — no analysis zip published")
@@ -1652,7 +2017,7 @@ class MainActivity : Activity() {
                     logLine("Val finished files published to Download/MotoFlasher/val/: $outName, lk.patched.bin, analysis-$preset.zip")
                     valFlowFile = publishedPatched
                 } else {
-                    logLine("DOWNLOADS WARNING: $outName could NOT be published to Download/MotoFlasher/val/ — flow file falls back to the private copy at ${outFile.absolutePath}")
+                    logLine("DOWNLOADS WARNING: $outName could not be published to Download/MotoFlasher/val/ — flow file falls back to the private copy at ${outFile.absolutePath}")
                     valFlowFile = outFile
                 }
                 valPatched = true
@@ -1663,6 +2028,7 @@ class MainActivity : Activity() {
                 logLine("VAL: Analysis dir : ${analysisDir.absolutePath}")
                 logLine("VAL: Patched bin : ${patchedBin.absolutePath}")
                 logLine("VAL: Patched image: ${outFile.absolutePath}")
+                patchOk = true
                 runOnUiThread {
                     toast("Patched: $outName — flash it from the buttons below")
                     updateValFlow()
@@ -1670,6 +2036,8 @@ class MainActivity : Activity() {
             } catch (e: Exception) {
                 logLine("ERROR patching: ${e.message}")
                 runOnUiThread { toast("Patch error — see log") }
+            } finally {
+                opFinished(patchOk)
             }
         }.start()
     }
@@ -1677,6 +2045,7 @@ class MainActivity : Activity() {
     /** Step 5a: read the target's serial number over fastboot. */
     private fun getValSerial() {
         logLine("$ fastboot getvar serialno")
+        opStarted()
         Thread {
             val r = Fastboot.run(this, listOf("getvar", "serialno")) { logLine(it) }
             val serial = Regex("serialno:\\s*(\\S+)", RegexOption.IGNORE_CASE)
@@ -1684,10 +2053,12 @@ class MainActivity : Activity() {
             if (serial.isEmpty()) {
                 logLine("ERROR: no serialno in getvar output (is the phone in fastboot?)")
                 runOnUiThread { toast("No serial found — see log") }
+                opFinished(false)
                 return@Thread
             }
             logLine("serialno: $serial")
             runOnUiThread { valSerialInput.setText(serial) }
+            opFinished(true)
         }.start()
     }
 
@@ -1754,7 +2125,7 @@ class MainActivity : Activity() {
                     "Command: fastboot flash $target ${flowFile.name}\n" +
                         "Source: the analyzed container (${lkImage?.partitions?.size ?: 0} partitions)\n" +
                         "Size: ${flowFile.length()} bytes\nSHA-256: $sha\n\n" +
-                        "LK is the bootloader. Bad flash = BRICK until BROM recovery. Only flash an LK for this phone.",
+                        "The LK is the bootloader. A bad flash bricks the phone until BROM recovery. Only flash an LK built for this phone.",
                 // 2.0.12: the two buttons encode the slot explicitly
                 // (lk / lk_b) — the picker must not second-guess them.
                 ) { runFlashSteps(listOf(Triple("flash", target, flowFile)), applySlot = false) }
@@ -1773,7 +2144,7 @@ class MainActivity : Activity() {
                     "Flash LK to $target?",
                     "Command: fastboot flash $target ${file.name}\n" +
                         "Size: ${file.length()} bytes\nSHA-256: $sha\n\n" +
-                        "LK is the bootloader. Bad flash = BRICK until BROM recovery. Only flash an LK for this phone.",
+                        "The LK is the bootloader. A bad flash bricks the phone until BROM recovery. Only flash an LK built for this phone.",
                 // 2.0.12: explicit lk / lk_b buttons — picker bypassed.
                 ) { runFlashSteps(listOf(Triple("flash", target, file)), applySlot = false) }
             }
@@ -1786,14 +2157,16 @@ class MainActivity : Activity() {
             if (err != null) { toast(err); logLine(err); return }
         }
         logLine("$ adb devices (fresh server)")
+        opStarted()
         Thread {
             // 2.0.8: fresh server — a stale daemon never sees the device.
             val r = Adb.devicesFresh(this) { logLine(it) }
             runOnUiThread {
                 deviceText.text = if (Adb.hasDevice(r.output)) "adb devices:\n${r.output}"
-                    else "adb devices: NONE. Run Diagnose ADB."
+                    else "adb devices: none found. Run Diagnose ADB."
                 deviceText.setLed(if (Adb.hasDevice(r.output)) UiStyle.Status.OK else UiStyle.Status.FAIL)
             }
+            opFinished(null)
         }.start()
     }
 
@@ -1816,6 +2189,7 @@ class MainActivity : Activity() {
         logLine("$ adb ${args.joinToString(" ")}")
         adbStatusText.text = "Running: adb ${args.joinToString(" ")} …"
         adbStatusText.setLed(UiStyle.Status.WAIT)
+        opStarted()
         Thread {
             // 2.0.8: `devices` always runs against a FRESH server — a
             // stale daemon owns port 5037 and never sees the device.
@@ -1825,15 +2199,16 @@ class MainActivity : Activity() {
             } else {
                 Adb.run(this, args) { logLine(it) }
             }
+            opFinished(r.exitCode == 0)
             runOnUiThread {
                 val out = r.output.trim()
                 adbStatusText.text = when {
                     out.contains("no devices/emulators found", ignoreCase = true) ->
-                        "$label: no device found.\nPlug in (OTG). USB debugging ON. Tap Allow."
+                        "$label: no device found.\nPlug in over OTG, turn on USB debugging, and tap Allow."
                     (args == listOf("devices") || args == listOf("devices", "-l")) && !Adb.hasDevice(out) ->
                         // 2.0.8: exit 0 with an empty list is NOT success —
                         // the server is up but blind. Say so plainly.
-                        "Devices: NONE. Server up, sees nothing.\nRun Diagnose ADB."
+                        "Devices: none found. The server is up but sees nothing.\nRun Diagnose ADB."
                     else -> "$label: exit ${r.exitCode}\n${out.ifBlank { "(no output)" }.take(400)}"
                 }
                 adbStatusText.setLed(
@@ -1888,7 +2263,8 @@ class MainActivity : Activity() {
         val outDir = File(getExternalFilesDir(null), "pulls")
         outDir.mkdirs()
         val localFile = File(outDir, "$part.img")
-        logLine("Pull $part -> ${localFile.absolutePath}")
+        logLine("Pull $part to ${localFile.absolutePath}")
+        opStarted()
         Thread {
             Adb.run(this, listOf("shell", "mkdir", "-p", remoteDir)) { logLine(it) }
             val dd = { blockDev: String ->
@@ -1904,13 +2280,15 @@ class MainActivity : Activity() {
             }
             if (!r.ok) {
                 logLine("FAILED: could not read $part off the target (is it rooted? is USB debugging on?)")
-                runOnUiThread { toast("Pull FAILED — see log") }
+                runOnUiThread { toast("Pull failed — see log") }
+                opFinished(false)
                 return@Thread
             }
             val pull = Adb.run(this, listOf("pull", remoteFile, localFile.absolutePath)) { logLine(it) }
             if (!pull.ok || !localFile.exists() || localFile.length() == 0L) {
                 logLine("FAILED: adb pull of $part did not produce a file")
-                runOnUiThread { toast("Pull FAILED — see log") }
+                runOnUiThread { toast("Pull failed — see log") }
+                opFinished(false)
                 return@Thread
             }
             val sha = Fastboot.sha256(localFile)
@@ -1923,6 +2301,7 @@ class MainActivity : Activity() {
                 valFlowFile = localFile
                 analyzeLkBytes(localFile.readBytes(), localFile.name)
             }
+            opFinished(true)
         }.start()
     }
 
@@ -1965,7 +2344,7 @@ class MainActivity : Activity() {
                                     items.add(FlashItem("MISSING FILE: ${s.raw}", s.partition, s.filename, null, 0, true, false))
                                 } else {
                                     val risky = s.partition?.lowercase() in RISKY_PARTS
-                                    items.add(FlashItem("flash ${s.partition} <- ${s.filename}", s.partition, s.filename, kid.second, kid.third, risky))
+                                    items.add(FlashItem("flash ${s.partition}: ${s.filename}", s.partition, s.filename, kid.second, kid.third, risky))
                                 }
                             }
                             "erase" -> items.add(FlashItem("erase ${s.partition}", s.partition, null, null, 0, true))
@@ -1990,7 +2369,7 @@ class MainActivity : Activity() {
                         val kid = byName[name]!!
                         val part = name.substringBeforeLast('.')
                         val risky = part.lowercase() in RISKY_PARTS
-                        items.add(FlashItem("flash $part <- $name", part, name, kid.second, kid.third, risky))
+                        items.add(FlashItem("flash $part: $name", part, name, kid.second, kid.third, risky))
                     }
                 }
                 groupSparseChunks(items)
@@ -2004,11 +2383,11 @@ class MainActivity : Activity() {
         }.start()
     }
 
-    /** Merge consecutive `flash <part> <- <base>.img_sparsechunk.N` steps into
+    /** Merge consecutive `flash <part>: <base>.img_sparsechunk.N` steps into
      * one checkbox row per partition ("super — 24 chunks, 6.4 GB"). The chunks
      * still flash one by one in order; only the list gets shorter. */
     private fun groupSparseChunks(items: MutableList<FlashItem>) {
-        val chunkRe = Regex("""flash (\S+) <- (.+)\.img_sparsechunk\.\d+""")
+        val chunkRe = Regex("""flash (\S+): (.+)\.img_sparsechunk\.\d+""")
         val grouped = mutableListOf<FlashItem>()
         var i = 0
         while (i < items.size) {
@@ -2030,7 +2409,7 @@ class MainActivity : Activity() {
                 val total = run.sumOf { it.size }
                 grouped.add(
                     FlashItem(
-                        "flash $part <- $base.img (${run.size} chunks, $total bytes)",
+                        "flash $part: $base.img (${run.size} chunks, $total bytes)",
                         part, null, null, total, run.any { it.risky },
                         run.all { it.checked }, run,
                     )
@@ -2082,9 +2461,9 @@ class MainActivity : Activity() {
         val target = slotPartition(part)
         return if (item.chunks.isNotEmpty()) {
             val base = item.chunks.firstOrNull()?.filename?.substringBefore(".img_sparsechunk") ?: part
-            "flash $target <- $base.img (${item.chunks.size} chunks, ${item.size} bytes)"
+            "flash $target: $base.img (${item.chunks.size} chunks, ${item.size} bytes)"
         } else {
-            "flash $target <- ${item.filename}"
+            "flash $target: ${item.filename}"
         }
     }
 
@@ -2126,18 +2505,22 @@ class MainActivity : Activity() {
 
     private fun flashSelected() {
         val selected = flashItems.filter { it.checked }
-        if (selected.isEmpty()) { toast("Tick at least one step first"); return }
+        if (selected.isEmpty()) { toast("Select at least one step first"); return }
         if (!writeGate()) return
         val summary = selected.joinToString("\n") { "• ${it.label}" }
         confirm(
             "Flash ${selected.size} step(s)?",
             "$summary\n\n" +
-                "Runs in order. Stops on first failure. No backup.",
+                "Steps run in order. The run stops on the first failure. There is no backup.",
         ) {
             Thread {
                 acquireWake()
                 try {
-                    for (item in selected) {
+                    for ((i, item) in selected.withIndex()) {
+                        // 2.0.13: determinate progress — step i of N.
+                        runOnUiThread {
+                            progressStrip.showDeterminate(i.toFloat() / selected.size)
+                        }
                         val ok = runFlashItem(item)
                         if (!ok) {
                             logLine("STOPPED after failure: ${item.label}")
@@ -2145,6 +2528,7 @@ class MainActivity : Activity() {
                             return@Thread
                         }
                     }
+                    runOnUiThread { progressStrip.showDeterminate(1f) }
                     logLine("Flash-all done: ${selected.size} step(s) OK")
                     runOnUiThread { toast("Flash-all done") }
                 } finally {
@@ -2182,14 +2566,14 @@ class MainActivity : Activity() {
                 // that decides the real fastboot partition. A/B names get
                 // the suffix (boot -> boot_a); anything else goes unchanged.
                 val target = slotPartition(item.partition!!)
-                if (target != item.partition) logLine("slot ${slotLabel()}: ${item.partition} -> $target")
+                if (target != item.partition) logLine("slot ${slotLabel()}: ${item.partition} becomes $target")
                 listOf("flash", target, file.absolutePath)
             }
             label.startsWith("erase ") -> {
                 // 2.0.12: erase of an A/B partition hits the picked
                 // slot's copy, same as flash.
                 val target = slotPartition(item.partition!!)
-                if (target != item.partition) logLine("slot ${slotLabel()}: ${item.partition} -> $target")
+                if (target != item.partition) logLine("slot ${slotLabel()}: ${item.partition} becomes $target")
                 listOf("erase", target)
             }
             label.startsWith("oem ") -> listOf("oem", label.removePrefix("oem ").trim())
@@ -2226,12 +2610,12 @@ class MainActivity : Activity() {
             try {
                 for ((op, part, file) in steps) {
                     val effPart = if (applySlot && op == "flash") slotPartition(part) else part
-                    if (effPart != part) logLine("slot ${slotLabel()}: $part -> $effPart")
-                    logLine("== $op $effPart <- ${file.name}")
+                    if (effPart != part) logLine("slot ${slotLabel()}: $part becomes $effPart")
+                    logLine("== $op $effPart from ${file.name}")
                     val r = Fastboot.run(this, listOf(op, effPart, file.absolutePath)) { logLine(it) }
                     if (!r.ok) {
                         logLine("FAILED: $op $effPart (exit ${r.exitCode})")
-                        runOnUiThread { toast("Flash FAILED — see log") }
+                        runOnUiThread { toast("Flash failed — see log") }
                         return@Thread
                     }
                     logLine("OK: $op $effPart")
@@ -2244,6 +2628,15 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        // 2.0.13: stop the watcher and every animator so nothing
+        // outlives the screen.
+        stopWatcher()
+        if (::progressStrip.isInitialized) progressStrip.hide()
+        stopBoltPulse()
+        valChipPulse?.cancel()
+        valChipPulse = null
+        UiStyle.stopLedPulse(statusText)
+        UiStyle.stopLedPulse(deviceText)
         releaseWake()
         super.onDestroy()
     }

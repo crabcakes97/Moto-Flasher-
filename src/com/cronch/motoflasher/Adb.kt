@@ -162,13 +162,13 @@ object Adb {
             onLine("adb devices: attempt 1 listed device(s)")
             return first
         }
-        onLine("adb devices: attempt 1 came back EMPTY (exit ${first.exitCode}) — retrying once")
+        onLine("adb devices: attempt 1 came back empty (exit ${first.exitCode}) — retrying once")
         onLine("adb devices: fresh server, attempt 2 (retry)")
         val second = devicesAttempt(ctx, onLine)
         if (hasDevice(second.output)) {
             onLine("adb devices: attempt 2 listed device(s)")
         } else {
-            onLine("adb devices: attempt 2 also EMPTY (exit ${second.exitCode}) — server is up but sees nothing. Run Diagnose ADB for the full dump.")
+            onLine("adb devices: attempt 2 also empty (exit ${second.exitCode}). The server is up but sees nothing. Run Diagnose ADB for the full dump.")
         }
         return second
     }
@@ -335,7 +335,7 @@ object Adb {
      * the More-tab log, copyable as usual.
      */
     fun diagnose(ctx: Context, onLine: (String) -> Unit): String {
-        onLine("=== ADB diagnose (2.0.12 full dump) ===")
+        onLine("=== ADB diagnose (full dump) ===")
         val bin = binFile(ctx)
         onLine("adb binary: ${bin.absolutePath}")
         onLine("adb binary exists=${bin.exists()} size=${if (bin.exists()) bin.length() else -1} executable=${bin.canExecute()}")

@@ -90,7 +90,7 @@ object Fastboot {
             val sent = if (isContinue) r.output.contains("Continuing") else r.output.contains("Rebooting")
             val refused = r.output.contains("FAILED (remote: '")
             if (sent && !refused) {
-                val note = "(device rebooted — connection dropped before OKAY, that's normal)"
+                val note = "(device rebooted; the connection dropped before OKAY, which is normal)"
                 onLine(note)
                 return Result(0, r.output + note + "\n", rebootDropped = true)
             }
@@ -114,7 +114,7 @@ object Fastboot {
                     if (abortOn != null && abortOn(line!!)) {
                         // The command is about to block forever waiting
                         // for a device. Kill it now and say what to do.
-                        val hint = "No fastboot device is answering. If 'fastboot devices' lists the phone, its fastboot session is stale — restart the phone into fastboot (bootloader) and try again. If nothing is listed, plug the phone in (OTG) and put it in fastboot mode."
+                        val hint = "No fastboot device is answering. If 'fastboot devices' lists the phone, its fastboot session is stale. Restart the phone into fastboot mode and try again. If nothing is listed, plug the phone in over OTG and put it in fastboot mode."
                         out.append(hint).append('\n')
                         onLine(hint)
                         proc.destroyForcibly()

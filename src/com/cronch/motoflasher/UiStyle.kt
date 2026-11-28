@@ -1,5 +1,7 @@
 package com.cronch.motoflasher
 
+import android.animation.ArgbEvaluator
+import android.animation.ValueAnimator
 import android.app.AlertDialog
 import android.content.Context
 import android.content.res.ColorStateList
@@ -22,10 +24,12 @@ import android.text.SpannableString
 import android.text.Spanned
 import android.text.style.ForegroundColorSpan
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -275,7 +279,7 @@ object UiStyle {
      */
     class PanelDrawable(
         private val fill: Int,
-        private val border: Int,
+        border: Int,
         private val highlight: Int,
         private val radiusPx: Float,
         private val borderPx: Float,
@@ -283,6 +287,15 @@ object UiStyle {
         private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = fill; style = Paint.Style.FILL }
         private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = border; style = Paint.Style.STROKE; strokeWidth = borderPx }
         private val hlPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = highlight; style = Paint.Style.STROKE; strokeWidth = borderPx }
+
+        /** 2.0.13: settable so the DEVICE card can flash its border
+         *  in the accent colour when a device connects. */
+        var borderColor: Int = border
+            set(v) {
+                field = v
+                borderPaint.color = v
+                invalidateSelf()
+            }
 
         override fun draw(canvas: Canvas) {
             val b = bounds
@@ -433,6 +446,22 @@ object UiStyle {
         compoundDrawablePadding = ctx.dp(8)
     }
 
+    /** 2.0.13: quick press feedback — scale to 0.97 on finger-down,
+     *  spring back on up/cancel (~120ms). The listener never
+     *  consumes the event, so clicks fire exactly as before; the
+     *  pressed-state background already inverts to the accent fill. */
+    fun addPressFeedback(v: View) {
+        v.setOnTouchListener { view, ev ->
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_DOWN ->
+                    view.animate().scaleX(0.97f).scaleY(0.97f).setDuration(120).start()
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
+                    view.animate().scaleX(1f).scaleY(1f).setDuration(120).start()
+            }
+            false
+        }
+    }
+
     private fun styledButton(
         ctx: Context, text: String, accent: Int, pressed: Int, fn: () -> Unit,
         row: Boolean = false, primary: Boolean = false,
@@ -465,6 +494,7 @@ object UiStyle {
                 bottomMargin = ctx.dp(4)
             }
         }
+        addPressFeedback(this)
         setOnClickListener { fn() }
     }
 
@@ -526,6 +556,7 @@ object UiStyle {
             topMargin = ctx.dp(4)
             bottomMargin = ctx.dp(4)
         }
+        addPressFeedback(this)
         setOnClickListener { fn() }
     }
 
@@ -581,39 +612,71 @@ object UiStyle {
         return logoBanner
     }
 
-    /** The top app bar: logo banner only (carries the name — shown ONCE).
-     *  2.0.12: the right side (version + root status) is gone — Kyle's
-     *  order. Root state still shows in the Home Status card. */
-    data class AppBar(val bar: LinearLayout)
+    /** The top app bar. 2.0.12: the right side (version + root
+     *  status) is gone — Kyle's order; root state shows in the Home
+     *  Status card. 2.0.13: rebuilt in the 2.0.12 GUI language —
+     *  subtle vertical gradient, chamfered bottom corners, accent
+     *  bolt block, condensed letter-spaced type, thin accent
+     *  underline. The words stay: "MOTO FLASHER" over
+     *  "BROM · FASTBOOT · PENUMBRA". [bolt] is the bolt icon view,
+     *  exposed so MainActivity can pulse its glow while an
+     *  operation runs. */
+    data class AppBar(val bar: LinearLayout, val bolt: View)
 
     fun appBar(ctx: Context): AppBar {
+        // Bolt block: solid accent chamfered square, bolt icon on top.
+        val boltIcon = TabIconView(ctx, 1).apply {
+            iconColor = ON_ACCENT
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+            ).apply { setMargins(ctx.dp(7), ctx.dp(7), ctx.dp(7), ctx.dp(7)) }
+        }
+        val boltBlock = FrameLayout(ctx).apply {
+            background = ChamferDrawable(
+                MAGENTA, MAGENTA, ctx.dp(1).toFloat(), ctx.dp(8).toFloat(),
+            )
+            layoutParams = LinearLayout.LayoutParams(ctx.dp(46), ctx.dp(46)).apply {
+                rightMargin = ctx.dp(12)
+            }
+            addView(boltIcon)
+        }
+        val titles = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(TextView(ctx).apply {
+                text = rainbow("MOTO FLASHER")
+                textSize = 23f
+                letterSpacing = 0.08f
+                applyHeadingFont(this)
+                setShadowLayer(5f, 0f, 0f, 0xFF000000.toInt())
+            })
+            addView(TextView(ctx).apply {
+                text = "BROM · FASTBOOT · PENUMBRA"
+                textSize = 11f
+                letterSpacing = 0.18f
+                setTextColor(TEXT_DIM)
+                applyHeadingFont(this)
+                setPadding(0, ctx.dp(2), 0, 0)
+            })
+        }
         val row = LinearLayout(ctx).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setBackgroundColor(CARD)
-            setPadding(ctx.dp(14), ctx.dp(10), ctx.dp(14), ctx.dp(10))
-        }
-        val logo = logoBanner(ctx)
-        if (logo != null) {
-            row.addView(ImageView(ctx).apply {
-                setImageBitmap(logo)
-                scaleType = ImageView.ScaleType.FIT_CENTER
-                adjustViewBounds = true
-                layoutParams = LinearLayout.LayoutParams(ctx.dp(208), ctx.dp(52)).apply {
-                    rightMargin = ctx.dp(12)
-                }
-            })
-        } else {
-            // Logo asset absent (re-package pending): gradient tile + "MF".
-            row.addView(TextView(ctx).apply {
-                text = "MF"
-                textSize = 30f
-                gravity = Gravity.CENTER
-                background = bannerBackground(ctx)
-                layoutParams = LinearLayout.LayoutParams(ctx.dp(52), ctx.dp(52)).apply {
-                    rightMargin = ctx.dp(12)
-                }
-            })
+            // Subtle gradient (accent-tinted top easing into the card
+            // colour) with chamfered bottom corners to match the
+            // angular panels below.
+            background = GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                intArrayOf(blend(CARD, MAGENTA, 0.14f), CARD),
+            ).apply {
+                shape = GradientDrawable.RECTANGLE
+                val r = ctx.dp(8).toFloat()
+                cornerRadii = floatArrayOf(0f, 0f, 0f, 0f, r, r, r, r)
+            }
+            setPadding(ctx.dp(14), ctx.dp(10), ctx.dp(14), ctx.dp(12))
+            addView(boltBlock)
+            addView(titles)
         }
         val bar = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
@@ -625,7 +688,7 @@ object UiStyle {
                 )
             })
         }
-        return AppBar(bar)
+        return AppBar(bar, boltIcon)
     }
 
     /** Geometric tab icon drawn with Canvas — no emoji, no assets.
@@ -843,6 +906,259 @@ object UiStyle {
         dialog.setView(body)
         dialog.show()
         dialog.window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+    }
+
+    // ---------- 2.0.13: animations (UI thread only, cheap, no assets) ----------
+
+    /**
+     * Thin operation progress strip (4dp), drawn with Canvas.
+     * Indeterminate mode sweeps an accent segment across the track;
+     * determinate mode fills to a fraction (flash-all step X of N).
+     * Hidden by default. The animator is cancelled on hide() and on
+     * detach, so nothing leaks past the operation or the screen.
+     */
+    class ProgressStripView(ctx: Context) : View(ctx) {
+        private val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = blend(CARD, Color.WHITE, 0.08f); style = Paint.Style.FILL
+        }
+        private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = MAGENTA; style = Paint.Style.FILL
+        }
+        private var fraction = -1f // <0 = indeterminate
+        private var sweep = 0f
+        private var animator: ValueAnimator? = null
+
+        init {
+            visibility = GONE
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, ctx.dp(4),
+            )
+        }
+
+        fun showIndeterminate() {
+            fraction = -1f
+            visibility = VISIBLE
+            startSweep()
+            invalidate()
+        }
+
+        fun showDeterminate(f: Float) {
+            fraction = f.coerceIn(0f, 1f)
+            visibility = VISIBLE
+            stopSweep()
+            invalidate()
+        }
+
+        fun hide() {
+            stopSweep()
+            visibility = GONE
+        }
+
+        private fun startSweep() {
+            if (animator != null) return
+            animator = ValueAnimator.ofFloat(0f, 1f).apply {
+                duration = 1100
+                repeatCount = ValueAnimator.INFINITE
+                addUpdateListener {
+                    sweep = it.animatedValue as Float
+                    invalidate()
+                }
+                start()
+            }
+        }
+
+        private fun stopSweep() {
+            animator?.cancel()
+            animator = null
+        }
+
+        override fun onDetachedFromWindow() {
+            stopSweep()
+            super.onDetachedFromWindow()
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            val w = width.toFloat()
+            val h = height.toFloat()
+            if (w <= 0f || h <= 0f) return
+            canvas.drawRect(0f, 0f, w, h, trackPaint)
+            if (fraction >= 0f) {
+                canvas.drawRect(0f, 0f, w * fraction, h, fillPaint)
+            } else {
+                // Accent segment (30% wide) sweeping left to right.
+                val seg = w * 0.3f
+                val x = -seg + (w + seg) * sweep
+                canvas.drawRect(x, 0f, x + seg, h, fillPaint)
+            }
+        }
+    }
+
+    /**
+     * Full-content edge flash: a stroked border drawn over the
+     * content area, fading out over ~600ms. Green = operation
+     * succeeded, red = it failed. Never clickable; invisible when
+     * idle. One-shot animator, cancelled on detach.
+     */
+    class EdgeFlashView(ctx: Context) : View(ctx) {
+        private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = ctx.dp(3).toFloat()
+        }
+        private var animator: ValueAnimator? = null
+
+        init {
+            isClickable = false
+            isFocusable = false
+            visibility = INVISIBLE
+        }
+
+        fun flash(color: Int) {
+            animator?.cancel()
+            strokePaint.color = color
+            strokePaint.alpha = 255
+            visibility = VISIBLE
+            animator = ValueAnimator.ofInt(255, 0).apply {
+                duration = 600
+                addUpdateListener {
+                    strokePaint.alpha = it.animatedValue as Int
+                    invalidate()
+                }
+                addListener(object : android.animation.AnimatorListenerAdapter() {
+                    override fun onAnimationEnd(a: android.animation.Animator) {
+                        visibility = INVISIBLE
+                    }
+                })
+                start()
+            }
+        }
+
+        override fun onDetachedFromWindow() {
+            animator?.cancel()
+            animator = null
+            super.onDetachedFromWindow()
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            if (visibility != VISIBLE) return
+            val inset = strokePaint.strokeWidth / 2
+            canvas.drawRect(inset, inset, width - inset, height - inset, strokePaint)
+        }
+    }
+
+    // LED pulse: animates the compound LED drawable's alpha. One
+    // animator per TextView, tracked so it can always be stopped.
+    private val ledAnimators = mutableMapOf<TextView, ValueAnimator>()
+
+    /** Gentle repeating LED pulse (alpha 90..255, 700ms each way). */
+    fun startLedPulse(tv: TextView) {
+        stopLedPulse(tv)
+        val led = tv.compoundDrawables[0] as? GradientDrawable ?: return
+        val a = ValueAnimator.ofInt(90, 255).apply {
+            duration = 700
+            repeatMode = ValueAnimator.REVERSE
+            repeatCount = ValueAnimator.INFINITE
+            addUpdateListener {
+                led.alpha = it.animatedValue as Int
+                tv.invalidate()
+            }
+        }
+        ledAnimators[tv] = a
+        a.start()
+    }
+
+    /** Short LED pulse (three cycles), then solid again — used when
+     *  a device connects. */
+    fun pulseLedOnce(tv: TextView) {
+        stopLedPulse(tv)
+        val led = tv.compoundDrawables[0] as? GradientDrawable ?: return
+        val a = ValueAnimator.ofInt(90, 255).apply {
+            duration = 260
+            repeatMode = ValueAnimator.REVERSE
+            repeatCount = 5
+            addUpdateListener {
+                led.alpha = it.animatedValue as Int
+                tv.invalidate()
+            }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(anim: android.animation.Animator) {
+                    led.alpha = 255
+                    tv.invalidate()
+                    ledAnimators.remove(tv)
+                }
+            })
+        }
+        ledAnimators[tv] = a
+        a.start()
+    }
+
+    fun stopLedPulse(tv: TextView) {
+        ledAnimators.remove(tv)?.cancel()
+        (tv.compoundDrawables[0] as? GradientDrawable)?.alpha = 255
+        tv.invalidate()
+    }
+
+    /** One-shot border glow on a card: border flashes to the accent
+     *  colour and eases back over ~900ms. No-op when the card's
+     *  background is not a PanelDrawable. */
+    fun glowCardBorder(card: View) {
+        val panel = card.background as? PanelDrawable ?: return
+        val from = MAGENTA
+        val to = CARD_STROKE
+        ValueAnimator.ofObject(ArgbEvaluator(), from, to).apply {
+            duration = 900
+            addUpdateListener { panel.borderColor = it.animatedValue as Int }
+            start()
+        }
+    }
+
+    enum class ChipState { PENDING, ACTIVE, DONE }
+
+    /** Small chamfered step chip for the Val flow readout. */
+    fun stepChip(ctx: Context, label: String): TextView = TextView(ctx).apply {
+        text = label
+        isAllCaps = true
+        letterSpacing = 0.05f
+        textSize = 11f
+        gravity = Gravity.CENTER
+        applyHeadingFont(this)
+        setPadding(ctx.dp(6), ctx.dp(6), ctx.dp(6), ctx.dp(6))
+        layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+            leftMargin = ctx.dp(2)
+            rightMargin = ctx.dp(2)
+            topMargin = ctx.dp(4)
+            bottomMargin = ctx.dp(4)
+        }
+        setChipState(this, ChipState.PENDING)
+    }
+
+    /** Chip colours by state: pending = dim on dark, active = accent
+     *  border + bright text, done = solid accent with dark text. */
+    fun setChipState(chip: TextView, state: ChipState) {
+        val ctx = chip.context
+        val borderPx = 1.5f * ctx.resources.displayMetrics.density
+        val chamferPx = ctx.dp(5).toFloat()
+        when (state) {
+            ChipState.PENDING -> {
+                chip.background = ChamferDrawable(
+                    blend(CARD, Color.BLACK, 0.25f), PURPLE, borderPx, chamferPx,
+                )
+                chip.setTextColor(TEXT_DIM)
+            }
+            ChipState.ACTIVE -> {
+                chip.background = ChamferDrawable(
+                    blend(MAGENTA, Color.BLACK, 0.78f), MAGENTA, borderPx, chamferPx,
+                )
+                chip.setTextColor(TEXT)
+            }
+            ChipState.DONE -> {
+                chip.background = ChamferDrawable(
+                    MAGENTA, MAGENTA, borderPx, chamferPx,
+                )
+                chip.setTextColor(ON_ACCENT)
+            }
+        }
     }
 }
 

@@ -109,11 +109,11 @@ class PenumbraSession(
         val r = run(listOf("storage-info"), onLog, 120_000L)
         if (!r.ok) {
             logHwSubcode(r.output, onLog)
-            return failFrom(r.output, "Connect FAILED (exit ${r.exitCode}) — wrong DA/auth for this phone, no preloader/BROM device, or the binary did not run. See the lines above.")
+            return failFrom(r.output, "Connect failed (exit ${r.exitCode}). Wrong DA or auth for this phone, no preloader or BROM device, or the binary did not run. See the lines above.")
         }
         val info = Penumbra.parseStorageInfo(r.output)
         if (info == null) {
-            return BromResult.Fail("Connect: Antumbra exited 0 but storage-info did not parse (output format changed?) — see the log above")
+            return BromResult.Fail("Connect: Antumbra exited 0 but storage-info did not parse (output format changed?). See the log above.")
         }
         storage = info
         logHwSubcode(r.output, onLog)
